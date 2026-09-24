@@ -4,7 +4,8 @@
   ],
   "standup_time": "09:30",
   "jira": {
-    "base_url": "https://your-company.atlassian.net"
+    "base_url": "https://your-company.atlassian.net",
+    "board": "Smart Trade Scrum Board"
   },
   "gateway": {
     "base_url": "https://ai-gateway.example.com/v1",

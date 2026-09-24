@@ -45,7 +45,18 @@ python standup.py --copy                 # also copy it to the clipboard
 python standup.py --standup-time 10:00   # override the standup time
 python standup.py --since "2026-09-22 09:30"   # explicit window start
 python standup.py --skip-jira            # git only
+python standup.py --list-boards          # boards you can see: id, type, name, project
+python standup.py --board "Smart Trade Scrum Board"   # read tickets from one board (id or name)
+python standup.py --board all            # tickets from every board
 ```
+
+### Choosing the Jira board
+
+Set `jira.board` in `config.json` to a board name or id; it is the default for every run, and `--board` overrides
+it for a single run (`--board all` removes the restriction). Only tickets on that board are read. Names are
+matched exactly first, then by substring; if several boards match (for example three boards are named
+"QR Service") the tool lists them and asks for an id. Leave `board` out to read all boards.
+The board does not affect which git repos are read; those come from `repos`.
 
 For each ticket the tool also reads status changes and comments made inside the window, by you or by anyone
 else (for example QA sending a ticket back with a comment late in the day). Tickets are written in the standup

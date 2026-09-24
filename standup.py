@@ -220,8 +220,43 @@ def fetch_activity(cfg, email, token, key, me_id, since, until):
     return sorted(events, key=lambda e: e["when"])
 
 
-def jira_search(cfg, email, token, jql, max_results=50):
-    data = jira_get(cfg, email, token, "/rest/api/3/search/jql",
+def list_boards(cfg, email, token, name=None):
+    boards, start = [], 0
+    while True:
+        params = {"startAt": start, "maxResults": 50}
+        if name:
+            params["name"] = name
+        data = jira_get(cfg, email, token, "/rest/agile/1.0/board", params)
+        values = data.get("values", [])
+        boards += values
+        if data.get("isLast", True) or not values:
+            return boards
+        start += len(values)
+
+
+def resolve_board(cfg, email, token, wanted):
+    """Turn a board id or (part of) a board name into a board dict. None/'all' means every board."""
+    if wanted is None or str(wanted).strip().lower() in ("", "all", "none"):
+        return None
+    wanted = str(wanted).strip()
+    if wanted.isdigit():
+        boards = [b for b in list_boards(cfg, email, token) if str(b["id"]) == wanted]
+    else:
+        boards = list_boards(cfg, email, token, name=wanted)
+        exact = [b for b in boards if b["name"].lower() == wanted.lower()]
+        boards = exact or boards
+    if not boards:
+        sys.exit(f"No Jira board matches '{wanted}'. Run: python standup.py --list-boards")
+    if len(boards) > 1:
+        options = "\n".join(f"  {b['id']}  {b['name']}" for b in boards)
+        sys.exit(f"'{wanted}' matches several boards, use the id or a longer name:\n{options}")
+    return boards[0]
+
+
+def jira_search(cfg, email, token, jql, max_results=50, board_id=None):
+    # With a board selected, use the Agile API so only issues on that board are returned.
+    path = f"/rest/agile/1.0/board/{board_id}/issue" if board_id else "/rest/api/3/search/jql"
+    data = jira_get(cfg, email, token, path,
                     {"jql": jql, "maxResults": max_results, "fields": "summary,status,updated,issuetype"})
     issues = []
     for issue in data.get("issues", []):
@@ -252,15 +287,19 @@ def verify_jira_auth(cfg, email, token):
 MAX_TICKETS_WITH_ACTIVITY = 40
 
 
-def collect_jira(cfg, since, until):
+def collect_jira(cfg, since, until, board_setting):
+    """Returns (board name or None, tickets). board_setting: id, name or 'all'."""
     email = require_env("JIRA_EMAIL")
     token = require_env("JIRA_API_TOKEN")
     me_id = verify_jira_auth(cfg, email, token)
+    board = resolve_board(cfg, email, token, board_setting)
+    board_id = board["id"] if board else None
     since_str = since.strftime("%Y-%m-%d %H:%M")
     until_str = until.strftime("%Y-%m-%d %H:%M")
     open_issues = jira_search(
         cfg, email, token,
         "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+        board_id=board_id,
     )
     # Comments by others (e.g. QA) also bump "updated", so feedback received in the window shows up here.
     # "assignee was" also catches tickets reassigned to QA while I am waiting on their feedback.
@@ -268,6 +307,7 @@ def collect_jira(cfg, since, until):
         cfg, email, token,
         f'(assignee = currentUser() OR assignee was currentUser()) '
         f'AND updated >= "{since_str}" AND updated <= "{until_str}" ORDER BY updated DESC',
+        board_id=board_id,
     )
     tickets = {}
     for issue in open_issues:
@@ -276,11 +316,13 @@ def collect_jira(cfg, since, until):
         tickets.setdefault(issue["key"], {**issue, "open": False})
     for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
         ticket["activity"] = fetch_activity(cfg, email, token, ticket["key"], me_id, since, until)
-    return list(tickets.values())
+    return (board["name"] if board else None), list(tickets.values())
 
 
-def render_context(since, now, git_sections, jira):
-    lines = [f"Report window: {since:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M}", "", "== GIT COMMITS =="]
+def render_context(since, now, git_sections, jira, board_name=None):
+    lines = [f"Report window: {since:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M}"]
+    lines.append(f"Jira board: {board_name}" if board_name else "Jira board: all boards")
+    lines += ["", "== GIT COMMITS =="]
     for sec in git_sections:
         lines.append(f"[{sec['repo']}]")
         if "error" in sec:
@@ -364,6 +406,9 @@ def main():
     ap.add_argument("--until", help="window end 'YYYY-MM-DD HH:MM' (default: now); use to replay a past standup")
     ap.add_argument("--dry-run", action="store_true", help="print collected data, do not call the model")
     ap.add_argument("--skip-jira", action="store_true", help="git only")
+    ap.add_argument("--board", help="Jira board id or name to read tickets from; 'all' for every board "
+                                    "(default: jira.board from config)")
+    ap.add_argument("--list-boards", action="store_true", help="list the Jira boards you can see and exit")
     ap.add_argument("--list-models", action="store_true", help="list models on the gateway and exit")
     ap.add_argument("--copy", action="store_true", help="copy the result to the clipboard")
     args = ap.parse_args()
@@ -374,6 +419,14 @@ def main():
         list_models(cfg)
         return
 
+    if args.list_boards:
+        email, token = require_env("JIRA_EMAIL"), require_env("JIRA_API_TOKEN")
+        verify_jira_auth(cfg, email, token)
+        for b in list_boards(cfg, email, token):
+            project = (b.get("location") or {}).get("projectName", "")
+            print(f"{b['id']}\t{b['type']}\t{b['name']}\t{project}")
+        return
+
     try:
         now = datetime.strptime(args.until, "%Y-%m-%d %H:%M") if args.until else datetime.now()
     except ValueError:
@@ -382,8 +435,9 @@ def main():
     since = window_start(standup_time, args.since, now)
 
     git_sections = collect_git(cfg.get("repos", []), (cfg.get("git") or {}).get("author"), since, now)
-    jira = None if args.skip_jira else collect_jira(cfg, since, now)
-    context = render_context(since, now, git_sections, jira)
+    board_setting = args.board if args.board is not None else cfg["jira"].get("board")
+    board_name, jira = (None, None) if args.skip_jira else collect_jira(cfg, since, now, board_setting)
+    context = render_context(since, now, git_sections, jira, board_name)
 
     if args.dry_run:
         print(context)
