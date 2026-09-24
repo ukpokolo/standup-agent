@@ -23,7 +23,9 @@ SYSTEM_PROMPT = (
     "You write concise daily standup updates for a software engineer. "
     "Use exactly three sections: Yesterday, Today, Blockers. Use short bullet points. "
     "Only mention work that appears in the data provided; never invent work. "
-    "Reference Jira ticket keys where commits or tickets relate to them. "
+    "Refer to Jira tickets by their title, written in plain readable words, and never output ticket IDs or keys "
+    "(like ABC-123): readers find IDs meaningless. Use the ticket keys in the data only to match commits to "
+    "their ticket title. If a commit mentions a key with no known title, describe the work instead. "
     "Under Today, use the tickets that are in progress or open and not yet done. "
     "If there are no blockers in the data, write 'None'."
 )
