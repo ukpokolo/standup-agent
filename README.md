@@ -47,6 +47,10 @@ python standup.py --since "2026-09-22 09:30"   # explicit window start
 python standup.py --skip-jira            # git only
 ```
 
+For each ticket the tool also reads status changes and comments made inside the window, by you or by anyone
+else (for example QA sending a ticket back with a comment late in the day). Tickets are written in the standup
+by title, never by ID. Use `--until "YYYY-MM-DD HH:MM"` to replay a past standup.
+
 Commits not yet pushed are marked `[NOT PUSHED]` in the data given to the model.
 Ticket keys such as `CR-123` in commit messages or branch names are linked to Jira tickets.
 

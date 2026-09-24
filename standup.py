@@ -15,8 +15,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 HERE = Path(__file__).resolve().parent
+
+# One session with retries: corporate networks occasionally drop a connection or fail an SSL handshake.
+HTTP = requests.Session()
+HTTP.mount("https://", HTTPAdapter(max_retries=Retry(
+    total=4, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=None,  # also retry POST (the gateway call is idempotent for our purposes)
+)))
+HTTP.mount("http://", HTTP.adapters["https://"])
 TICKET_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
 SYSTEM_PROMPT = (
@@ -26,8 +36,16 @@ SYSTEM_PROMPT = (
     "Refer to Jira tickets by their title, written in plain readable words, and never output ticket IDs or keys "
     "(like ABC-123): readers find IDs meaningless. Use the ticket keys in the data only to match commits to "
     "their ticket title. If a commit mentions a key with no known title, describe the work instead. "
-    "Under Today, use the tickets that are in progress or open and not yet done. "
-    "If there are no blockers in the data, write 'None'."
+    "YESTERDAY = what I did in the report window: commits, tickets I moved between statuses, tickets closed, "
+    "and comments I made. Also include feedback I received: if someone else (for example QA) commented on a "
+    "ticket or moved it back to development in the window, say that feedback was received on that ticket and "
+    "summarise it, even if it happened late in the day. "
+    "TODAY = what I will work on now: tickets currently in progress or in development, and any ticket sent back "
+    "with feedback (state what needs fixing, taken from the comment). Do not list tickets that are Ready for QA, "
+    "in review, or closed as work to do, unless feedback sent them back. Put tickets with no activity in the "
+    "window into one final bullet 'Also in progress: ...' instead of listing each separately. "
+    "BLOCKERS = only things the data shows are blocking work (for example a comment saying blocked or waiting on "
+    "someone). If there are none, write 'None'."
 )
 
 
@@ -126,20 +144,87 @@ def collect_git(repos, author_override, since, until):
     return sections
 
 
-def jira_search(cfg, email, token, jql, max_results=50):
-    url = cfg["jira"]["base_url"].rstrip("/") + "/rest/api/3/search/jql"
-    resp = requests.get(
-        url,
-        params={"jql": jql, "maxResults": max_results, "fields": "summary,status,updated,issuetype"},
-        auth=(email, token),
-        headers={"Accept": "application/json"},
-        timeout=30,
+def jira_get(cfg, email, token, path, params=None):
+    url = cfg["jira"]["base_url"].rstrip("/") + path
+    resp = HTTP.get(
+        url, params=params, auth=(email, token), headers={"Accept": "application/json"}, timeout=30,
     )
     if resp.status_code in (401, 403):
         sys.exit(f"Jira rejected the credentials (HTTP {resp.status_code}). Check JIRA_EMAIL / JIRA_API_TOKEN.")
     resp.raise_for_status()
+    return resp.json()
+
+
+def parse_jira_time(text):
+    """Jira timestamps carry an offset; convert to naive local time to compare with the report window."""
+    return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S.%f%z").astimezone().replace(tzinfo=None)
+
+
+def adf_to_text(node):
+    """Flatten Atlassian Document Format (used for comment bodies) to plain text."""
+    if isinstance(node, str):
+        return node
+    if not isinstance(node, dict):
+        return ""
+    kind = node.get("type")
+    if kind == "text":
+        return node.get("text", "")
+    if kind == "mention":
+        return (node.get("attrs") or {}).get("text", "@user")
+    if kind == "hardBreak":
+        return "\n"
+    inner = "".join(adf_to_text(child) for child in node.get("content") or [])
+    if kind in ("paragraph", "heading", "listItem", "codeBlock", "blockquote"):
+        return inner + "\n"
+    return inner
+
+
+def person(user, me_id):
+    user = user or {}
+    if user.get("accountId") and user.get("accountId") == me_id:
+        return "me"
+    return user.get("displayName") or "someone"
+
+
+def fetch_activity(cfg, email, token, key, me_id, since, until):
+    """Status changes and comments on one ticket inside the report window."""
+    events = []
+    start = 0
+    while True:
+        data = jira_get(cfg, email, token, f"/rest/api/3/issue/{key}/changelog",
+                        {"startAt": start, "maxResults": 100})
+        values = data.get("values", [])
+        for entry in values:
+            when = parse_jira_time(entry["created"])
+            if not (since <= when <= until):
+                continue
+            for item in entry.get("items", []):
+                if item.get("field") == "status":
+                    events.append({
+                        "when": when, "kind": "status", "by": person(entry.get("author"), me_id),
+                        "text": f"{item.get('fromString')} -> {item.get('toString')}",
+                    })
+        if data.get("isLast", True) or not values:
+            break
+        start += len(values)
+    comments = jira_get(cfg, email, token, f"/rest/api/3/issue/{key}/comment",
+                        {"orderBy": "-created", "maxResults": 50}).get("comments", [])
+    for c in comments:
+        when = parse_jira_time(c["created"])
+        if since <= when <= until:
+            text = " ".join(adf_to_text(c.get("body")).split())
+            events.append({
+                "when": when, "kind": "comment", "by": person(c.get("author"), me_id),
+                "text": text[:500] + ("..." if len(text) > 500 else ""),
+            })
+    return sorted(events, key=lambda e: e["when"])
+
+
+def jira_search(cfg, email, token, jql, max_results=50):
+    data = jira_get(cfg, email, token, "/rest/api/3/search/jql",
+                    {"jql": jql, "maxResults": max_results, "fields": "summary,status,updated,issuetype"})
     issues = []
-    for issue in resp.json().get("issues", []):
+    for issue in data.get("issues", []):
         f = issue["fields"]
         issues.append({
             "key": issue["key"],
@@ -154,31 +239,44 @@ def verify_jira_auth(cfg, email, token):
     """Search silently returns zero issues for unauthenticated (anonymous) calls,
     so confirm the credentials are real before trusting an empty result."""
     url = cfg["jira"]["base_url"].rstrip("/") + "/rest/api/3/myself"
-    resp = requests.get(url, auth=(email, token), headers={"Accept": "application/json"}, timeout=30)
+    resp = HTTP.get(url, auth=(email, token), headers={"Accept": "application/json"}, timeout=30)
     if resp.status_code != 200:
         sys.exit(
             f"Jira login failed (HTTP {resp.status_code}) for {email}. "
             "The API token is invalid, revoked, or scoped. Create a new plain token at "
             "https://id.atlassian.com/manage-profile/security/api-tokens and update JIRA_API_TOKEN."
         )
+    return resp.json().get("accountId")
+
+
+MAX_TICKETS_WITH_ACTIVITY = 40
 
 
 def collect_jira(cfg, since, until):
     email = require_env("JIRA_EMAIL")
     token = require_env("JIRA_API_TOKEN")
-    verify_jira_auth(cfg, email, token)
+    me_id = verify_jira_auth(cfg, email, token)
     since_str = since.strftime("%Y-%m-%d %H:%M")
     until_str = until.strftime("%Y-%m-%d %H:%M")
     open_issues = jira_search(
         cfg, email, token,
         "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
     )
+    # Comments by others (e.g. QA) also bump "updated", so feedback received in the window shows up here.
+    # "assignee was" also catches tickets reassigned to QA while I am waiting on their feedback.
     touched = jira_search(
         cfg, email, token,
-        f'assignee = currentUser() AND updated >= "{since_str}" AND updated <= "{until_str}" '
-        "ORDER BY updated DESC",
+        f'(assignee = currentUser() OR assignee was currentUser()) '
+        f'AND updated >= "{since_str}" AND updated <= "{until_str}" ORDER BY updated DESC',
     )
-    return {"open": open_issues, "recently_updated": touched}
+    tickets = {}
+    for issue in open_issues:
+        tickets[issue["key"]] = {**issue, "open": True}
+    for issue in touched:
+        tickets.setdefault(issue["key"], {**issue, "open": False})
+    for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
+        ticket["activity"] = fetch_activity(cfg, email, token, ticket["key"], me_id, since, until)
+    return list(tickets.values())
 
 
 def render_context(since, now, git_sections, jira):
@@ -194,20 +292,23 @@ def render_context(since, now, git_sections, jira):
             tag = "" if c["pushed"] else " [NOT PUSHED]"
             tickets = f" ({', '.join(c['tickets'])})" if c["tickets"] else ""
             lines.append(f"  {c['date']} {c['sha']} {c['subject']}{tickets}{tag}")
-    lines += ["", "== JIRA =="]
+    lines += ["", "== JIRA TICKETS ASSIGNED TO ME =="]
     if jira is None:
         lines.append("(Jira skipped)")
+    elif not jira:
+        lines.append("(none)")
     else:
-        lines.append("Open tickets assigned to me:")
-        for i in jira["open"] or []:
-            lines.append(f"  {i['key']} [{i['status']}] {i['summary']} (updated {i['updated']})")
-        if not jira["open"]:
-            lines.append("  (none)")
-        lines.append("Tickets updated in the window:")
-        for i in jira["recently_updated"] or []:
-            lines.append(f"  {i['key']} [{i['status']}] {i['summary']} (updated {i['updated']})")
-        if not jira["recently_updated"]:
-            lines.append("  (none)")
+        for t in jira:
+            state = "not done" if t["open"] else "done/closed"
+            lines.append(f"{t['key']} | \"{t['summary']}\" | current status: {t['status']} ({state}) | last updated {t['updated']}")
+            activity = t.get("activity")
+            if activity is None:
+                lines.append("    (activity not checked)")
+            elif not activity:
+                lines.append("    no activity in the window")
+            for e in activity or []:
+                label = f"status changed {e['text']}" if e["kind"] == "status" else f"comment: {e['text']}"
+                lines.append(f"    {e['when']:%Y-%m-%d %H:%M} by {e['by']} - {label}")
     return "\n".join(lines)
 
 
@@ -220,7 +321,7 @@ def gateway_session(cfg):
 
 def list_models(cfg):
     base, headers, verify = gateway_session(cfg)
-    resp = requests.get(base + "/models", headers=headers, timeout=30, verify=verify)
+    resp = HTTP.get(base + "/models", headers=headers, timeout=30, verify=verify)
     resp.raise_for_status()
     for m in resp.json().get("data", []):
         print(m.get("id"))
@@ -236,7 +337,7 @@ def generate(cfg, context):
         ],
         "temperature": 0.3,
     }
-    resp = requests.post(base + "/chat/completions", headers=headers, json=payload, timeout=120, verify=verify)
+    resp = HTTP.post(base + "/chat/completions", headers=headers, json=payload, timeout=120, verify=verify)
     if resp.status_code >= 400:
         sys.exit(f"Gateway error HTTP {resp.status_code}: {resp.text[:500]}")
     return resp.json()["choices"][0]["message"]["content"].strip()
