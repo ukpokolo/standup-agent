@@ -82,8 +82,9 @@ def run_git(repo, *args):
     return result.stdout, None
 
 
-def collect_git(repos, author_override, since):
+def collect_git(repos, author_override, since, until):
     since_str = since.strftime("%Y-%m-%d %H:%M")
+    until_str = until.strftime("%Y-%m-%d %H:%M")
     fmt = "%h|%ad|%D|%s"
     sections = []
     for repo in repos:
@@ -97,7 +98,7 @@ def collect_git(repos, author_override, since):
             author, _ = run_git(repo, "config", "user.email")
             author = (author or "").strip()
         commits, err = run_git(
-            repo, "log", "--all", f"--author={author}", f"--since={since_str}",
+            repo, "log", "--all", f"--author={author}", f"--since={since_str}", f"--until={until_str}",
             "--date=format:%Y-%m-%d %H:%M", f"--pretty=format:{fmt}",
         )
         if commits is None:
@@ -160,18 +161,20 @@ def verify_jira_auth(cfg, email, token):
         )
 
 
-def collect_jira(cfg, since):
+def collect_jira(cfg, since, until):
     email = require_env("JIRA_EMAIL")
     token = require_env("JIRA_API_TOKEN")
     verify_jira_auth(cfg, email, token)
     since_str = since.strftime("%Y-%m-%d %H:%M")
+    until_str = until.strftime("%Y-%m-%d %H:%M")
     open_issues = jira_search(
         cfg, email, token,
         "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
     )
     touched = jira_search(
         cfg, email, token,
-        f'assignee = currentUser() AND updated >= "{since_str}" ORDER BY updated DESC',
+        f'assignee = currentUser() AND updated >= "{since_str}" AND updated <= "{until_str}" '
+        "ORDER BY updated DESC",
     )
     return {"open": open_issues, "recently_updated": touched}
 
@@ -255,6 +258,7 @@ def main():
     ap.add_argument("--config", default=str(HERE / "config.json"))
     ap.add_argument("--standup-time", help="HH:MM, overrides standup_time from config")
     ap.add_argument("--since", help="explicit window start: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM'")
+    ap.add_argument("--until", help="window end 'YYYY-MM-DD HH:MM' (default: now); use to replay a past standup")
     ap.add_argument("--dry-run", action="store_true", help="print collected data, do not call the model")
     ap.add_argument("--skip-jira", action="store_true", help="git only")
     ap.add_argument("--list-models", action="store_true", help="list models on the gateway and exit")
@@ -267,12 +271,15 @@ def main():
         list_models(cfg)
         return
 
-    now = datetime.now()
+    try:
+        now = datetime.strptime(args.until, "%Y-%m-%d %H:%M") if args.until else datetime.now()
+    except ValueError:
+        sys.exit(f"Invalid --until '{args.until}', expected 'YYYY-MM-DD HH:MM'.")
     standup_time = parse_hhmm(args.standup_time or cfg.get("standup_time", "09:30"))
     since = window_start(standup_time, args.since, now)
 
-    git_sections = collect_git(cfg.get("repos", []), (cfg.get("git") or {}).get("author"), since)
-    jira = None if args.skip_jira else collect_jira(cfg, since)
+    git_sections = collect_git(cfg.get("repos", []), (cfg.get("git") or {}).get("author"), since, now)
+    jira = None if args.skip_jira else collect_jira(cfg, since, now)
     context = render_context(since, now, git_sections, jira)
 
     if args.dry_run:
