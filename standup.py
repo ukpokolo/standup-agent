@@ -33,7 +33,7 @@ def load_config(path):
     path = Path(path)
     if not path.exists():
         sys.exit(f"Config not found: {path}\nCopy config.example.json to config.json and fill it in.")
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:  # tolerate a BOM from Windows editors
         return json.load(f)
 
 
@@ -147,9 +147,23 @@ def jira_search(cfg, email, token, jql, max_results=50):
     return issues
 
 
+def verify_jira_auth(cfg, email, token):
+    """Search silently returns zero issues for unauthenticated (anonymous) calls,
+    so confirm the credentials are real before trusting an empty result."""
+    url = cfg["jira"]["base_url"].rstrip("/") + "/rest/api/3/myself"
+    resp = requests.get(url, auth=(email, token), headers={"Accept": "application/json"}, timeout=30)
+    if resp.status_code != 200:
+        sys.exit(
+            f"Jira login failed (HTTP {resp.status_code}) for {email}. "
+            "The API token is invalid, revoked, or scoped. Create a new plain token at "
+            "https://id.atlassian.com/manage-profile/security/api-tokens and update JIRA_API_TOKEN."
+        )
+
+
 def collect_jira(cfg, since):
     email = require_env("JIRA_EMAIL")
     token = require_env("JIRA_API_TOKEN")
+    verify_jira_auth(cfg, email, token)
     since_str = since.strftime("%Y-%m-%d %H:%M")
     open_issues = jira_search(
         cfg, email, token,
