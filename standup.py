@@ -3,7 +3,13 @@
 using a model on the company AI gateway (OpenAI-compatible API).
 
 Secrets come from environment variables only:
-    JIRA_EMAIL, JIRA_API_TOKEN, AI_GATEWAY_API_KEY
+    JIRA_EMAIL, JIRA_API_TOKEN, AI_GATEWAY_API_KEY, TEAMS_WEBHOOK_URL
+
+If TEAMS_WEBHOOK_URL is set, the generated standup is also posted to a Microsoft
+Teams channel via a Power Automate workflow webhook (Adaptive Card).
+
+Several teams can be configured (see config.example.json): each team has its own
+repos, Jira board and optional Teams webhook, and gets its own standup.
 """
 import argparse
 import json
@@ -30,8 +36,12 @@ HTTP.mount("http://", HTTP.adapters["https://"])
 TICKET_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
 SYSTEM_PROMPT = (
-    "You write concise daily standup updates for a software engineer. "
-    "Use exactly three sections: Yesterday, Today, Blockers. Use short bullet points. "
+    "You write a daily standup update that a software engineer will read aloud in a standup meeting. "
+    "Write in the first person ('I'), in plain, natural, spoken English, as if the engineer is talking to "
+    "their team. Keep it short and easy to say out loud: no jargon, no corporate filler, no long sentences. "
+    "Use exactly three sections, each as a heading on its own line: Yesterday, Today, Blockers. "
+    "Under each heading use short bullet points, at most 5 per section, each one a single natural sentence "
+    "that starts with a verb (for example 'Finished ...', 'Started ...', 'Fixed ...'). "
     "Only mention work that appears in the data provided; never invent work. "
     "Refer to Jira tickets by their title, written in plain readable words, and never output ticket IDs or keys "
     "(like ABC-123): readers find IDs meaningless. Use the ticket keys in the data only to match commits to "
@@ -45,7 +55,8 @@ SYSTEM_PROMPT = (
     "in review, or closed as work to do, unless feedback sent them back. Put tickets with no activity in the "
     "window into one final bullet 'Also in progress: ...' instead of listing each separately. "
     "BLOCKERS = only things the data shows are blocking work (for example a comment saying blocked or waiting on "
-    "someone). If there are none, write 'None'."
+    "someone). If there are none, write 'None'. "
+    "Do not add any preamble, sign-off, or extra commentary: output only the three sections."
 )
 
 
@@ -78,6 +89,18 @@ def previous_working_day(day):
     return day
 
 
+def ceil_to_minute(dt):
+    """Round up to the next whole minute.
+
+    The window end is 'now', which has seconds; git and Jira compare at minute
+    precision, so a commit or update made in the current minute would otherwise
+    fall just outside the window. Rounding up includes the whole current minute.
+    """
+    if dt.second or dt.microsecond:
+        return dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    return dt
+
+
 def window_start(standup_time, since_arg, now):
     """Start of the report window = the previous standup."""
     if since_arg:
@@ -104,8 +127,9 @@ def run_git(repo, *args):
 
 def collect_git(repos, author_override, since, until):
     since_str = since.strftime("%Y-%m-%d %H:%M")
-    until_str = until.strftime("%Y-%m-%d %H:%M")
-    fmt = "%h|%ad|%D|%s"
+    until_str = ceil_to_minute(until).strftime("%Y-%m-%d %H:%M")
+    # \x1f separates fields and \x1e separates commits, so multi-line bodies are safe.
+    fmt = "%h%x1f%ad%x1f%D%x1f%s%x1f%b%x1e"
     sections = []
     for repo in repos:
         repo = Path(repo).expanduser()
@@ -130,15 +154,19 @@ def collect_git(repos, author_override, since, until):
         )
         unpushed_set = set((unpushed or "").split())
         rows = []
-        for line in commits.splitlines():
-            parts = line.split("|", 3)
-            if len(parts) < 4:
+        for record in commits.split("\x1e"):
+            record = record.strip("\n")
+            if not record.strip():
                 continue
-            sha, date, refs, subject = parts
+            parts = record.split("\x1f")
+            if len(parts) < 5:
+                continue
+            sha, date, refs, subject, body = parts[0], parts[1], parts[2], parts[3], parts[4]
+            body = " ".join(body.split())  # collapse newlines/indentation into one line
             rows.append({
-                "sha": sha, "date": date, "subject": subject,
+                "sha": sha, "date": date, "subject": subject, "body": body,
                 "pushed": sha not in unpushed_set,
-                "tickets": sorted(set(TICKET_RE.findall(subject + " " + refs))),
+                "tickets": sorted(set(TICKET_RE.findall(subject + " " + body + " " + refs))),
             })
         sections.append({"repo": name, "commits": rows})
     return sections
@@ -295,7 +323,7 @@ def collect_jira(cfg, since, until, board_setting):
     board = resolve_board(cfg, email, token, board_setting)
     board_id = board["id"] if board else None
     since_str = since.strftime("%Y-%m-%d %H:%M")
-    until_str = until.strftime("%Y-%m-%d %H:%M")
+    until_str = ceil_to_minute(until).strftime("%Y-%m-%d %H:%M")
     open_issues = jira_search(
         cfg, email, token,
         "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
@@ -319,8 +347,11 @@ def collect_jira(cfg, since, until, board_setting):
     return (board["name"] if board else None), list(tickets.values())
 
 
-def render_context(since, now, git_sections, jira, board_name=None):
-    lines = [f"Report window: {since:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M}"]
+def render_context(since, now, git_sections, jira, board_name=None, team_name=None):
+    lines = []
+    if team_name:
+        lines.append(f"Team: {team_name}")
+    lines.append(f"Report window: {since:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M}")
     lines.append(f"Jira board: {board_name}" if board_name else "Jira board: all boards")
     lines += ["", "== GIT COMMITS =="]
     for sec in git_sections:
@@ -334,6 +365,8 @@ def render_context(since, now, git_sections, jira, board_name=None):
             tag = "" if c["pushed"] else " [NOT PUSHED]"
             tickets = f" ({', '.join(c['tickets'])})" if c["tickets"] else ""
             lines.append(f"  {c['date']} {c['sha']} {c['subject']}{tickets}{tag}")
+            if c.get("body"):
+                lines.append(f"      details: {c['body'][:300]}")
     lines += ["", "== JIRA TICKETS ASSIGNED TO ME =="]
     if jira is None:
         lines.append("(Jira skipped)")
@@ -398,6 +431,78 @@ def copy_to_clipboard(text):
         print("\n(could not copy to clipboard)")
 
 
+def send_to_teams(text, url=None):
+    """Post the standup to a Teams channel via a Power Automate workflow webhook.
+
+    Enabled by setting TEAMS_WEBHOOK_URL (or a per-team webhook env var). Failures
+    are reported but never fatal, so a webhook problem cannot lose the standup that
+    was already printed.
+    """
+    if url is None:
+        url = os.environ.get("TEAMS_WEBHOOK_URL")
+    if not url:
+        return
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [{"type": "TextBlock", "text": text, "wrap": True}],
+            },
+        }],
+    }
+    try:
+        resp = HTTP.post(url, json=payload, timeout=30)
+    except requests.RequestException as exc:
+        print(f"\n(could not post to Teams: {exc})")
+        return
+    if resp.status_code >= 400:
+        print(f"\n(could not post to Teams: HTTP {resp.status_code}: {resp.text[:300]})")
+        return
+    print("\n(posted to Teams)")
+
+
+def test_teams():
+    """Post a fixed hello card to TEAMS_WEBHOOK_URL to validate the webhook."""
+    if not os.environ.get("TEAMS_WEBHOOK_URL"):
+        sys.exit("TEAMS_WEBHOOK_URL is not set.")
+    send_to_teams("standup-agent test\n\nIf you can read this, the webhook works.")
+
+
+def resolve_teams(cfg, args):
+    """The teams to run, honouring --team / --all-teams.
+
+    A team is {name, repos, board, webhook_env}. With no 'teams' in config, one
+    implicit team is built from the top-level repos + jira.board (back-compat).
+    """
+    if args.team and args.all_teams:
+        sys.exit("Use either --team or --all-teams, not both.")
+    raw = cfg.get("teams")
+    if not raw:
+        raw = [{"name": None, "repos": cfg.get("repos", []), "board": cfg["jira"].get("board")}]
+    teams = [{
+        "name": t.get("name"),
+        "repos": t.get("repos", cfg.get("repos", [])),
+        "board": t.get("board", cfg["jira"].get("board")),
+        "webhook_env": t.get("webhook_env"),
+    } for t in raw]
+    if args.team:
+        wanted = args.team.strip().lower()
+        matches = [t for t in teams if (t["name"] or "").lower() == wanted]
+        if not matches:
+            names = ", ".join(t["name"] or "(unnamed)" for t in teams)
+            sys.exit(f"No team named '{args.team}'. Configured teams: {names}")
+        return matches
+    return teams
+
+
+def team_webhook_url(team):
+    return os.environ.get(team.get("webhook_env") or "TEAMS_WEBHOOK_URL")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=str(HERE / "config.json"))
@@ -408,10 +513,17 @@ def main():
     ap.add_argument("--skip-jira", action="store_true", help="git only")
     ap.add_argument("--board", help="Jira board id or name to read tickets from; 'all' for every board "
                                     "(default: jira.board from config)")
+    ap.add_argument("--team", help="run only the named team from config 'teams'")
+    ap.add_argument("--all-teams", action="store_true", help="run every configured team (the default)")
     ap.add_argument("--list-boards", action="store_true", help="list the Jira boards you can see and exit")
     ap.add_argument("--list-models", action="store_true", help="list models on the gateway and exit")
     ap.add_argument("--copy", action="store_true", help="copy the result to the clipboard")
+    ap.add_argument("--test-teams", action="store_true", help="post a test card to TEAMS_WEBHOOK_URL and exit")
     args = ap.parse_args()
+
+    if args.test_teams:
+        test_teams()
+        return
 
     cfg = load_config(args.config)
 
@@ -434,19 +546,29 @@ def main():
     standup_time = parse_hhmm(args.standup_time or cfg.get("standup_time", "09:30"))
     since = window_start(standup_time, args.since, now)
 
-    git_sections = collect_git(cfg.get("repos", []), (cfg.get("git") or {}).get("author"), since, now)
-    board_setting = args.board if args.board is not None else cfg["jira"].get("board")
-    board_name, jira = (None, None) if args.skip_jira else collect_jira(cfg, since, now, board_setting)
-    context = render_context(since, now, git_sections, jira, board_name)
+    teams = resolve_teams(cfg, args)
+    if args.board is not None:
+        for team in teams:
+            team["board"] = args.board
+    author = (cfg.get("git") or {}).get("author")
+    multi = len(teams) > 1
 
-    if args.dry_run:
-        print(context)
-        return
+    for team in teams:
+        if multi and team["name"]:
+            print(f"===== {team['name']} =====")
+        git_sections = collect_git(team["repos"], author, since, now)
+        board_name, jira = (None, None) if args.skip_jira else collect_jira(cfg, since, now, team["board"])
+        context = render_context(since, now, git_sections, jira, board_name, team["name"])
 
-    standup = generate(cfg, context)
-    print(standup)
-    if args.copy:
-        copy_to_clipboard(standup)
+        if args.dry_run:
+            print(context)
+            continue
+
+        standup = generate(cfg, context)
+        print(standup)
+        if args.copy:
+            copy_to_clipboard(standup)
+        send_to_teams(standup, team_webhook_url(team))
 
 
 if __name__ == "__main__":

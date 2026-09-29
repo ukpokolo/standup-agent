@@ -14,10 +14,14 @@ gateway model, with or without tool calling.
    pip install -r requirements.txt
    ```
 3. Copy `config.example.json` to `config.json` and edit it:
-   - `repos`: paths of the repositories to read commits from
+   - `teams`: one entry per team you work on (see "Working on several teams" below). Each entry has
+     `name`, `repos` (paths of the repositories to read commits from), `board` (Jira board name or id)
+     and an optional `webhook_env` (the env var holding that team's Teams webhook).
    - `standup_time`: your standup time, 24h `HH:MM`. The report covers everything since the previous
      working day's standup time (Monday rolls back to Friday).
    - `gateway.model`: run `python standup.py --list-models` and copy the exact the model id
+
+   A single-team config can skip `teams` and use top-level `repos` + `jira.board` instead; that still works.
 4. Set secrets as environment variables (never put them in `config.json` or commit them).
 
    PowerShell:
@@ -25,12 +29,14 @@ gateway model, with or without tool calling.
    $env:JIRA_EMAIL = "you@company.com"
    $env:JIRA_API_TOKEN = "<jira api token>"
    $env:AI_GATEWAY_API_KEY = "<gateway key>"
+   $env:TEAMS_WEBHOOK_URL = "<teams workflow webhook url>"   # optional, see below
    ```
    Linux / macOS:
    ```bash
    export JIRA_EMAIL="you@company.com"
    export JIRA_API_TOKEN="<jira api token>"
    export AI_GATEWAY_API_KEY="<gateway key>"
+   export TEAMS_WEBHOOK_URL="<teams workflow webhook url>"   # optional, see below
    ```
    Create the Jira token at https://id.atlassian.com/manage-profile/security/api-tokens
    (use the plain "Create API token" button, not the scoped one).
@@ -48,7 +54,29 @@ python standup.py --skip-jira            # git only
 python standup.py --list-boards          # boards you can see: id, type, name, project
 python standup.py --board "Smart Trade Scrum Board"   # read tickets from one board (id or name)
 python standup.py --board all            # tickets from every board
+python standup.py --team "Payments"      # run only one configured team
+python standup.py --all-teams            # run every configured team (the default)
 ```
+
+### Working on several teams
+
+If you work on more than one team, list each one under `teams` in `config.json`. Every team has its own
+repos, its own Jira board and (optionally) its own Teams webhook, and gets its own standup:
+
+```json
+"teams": [
+  { "name": "Smart Trade", "board": "Smart Trade Scrum Board",
+    "repos": ["C:/work/example-ui"], "webhook_env": "TEAMS_WEBHOOK_URL_EXAMPLE_TEAM" },
+  { "name": "Payments", "board": "Payments Scrum Board",
+    "repos": ["C:/work/payments-api"], "webhook_env": "TEAMS_WEBHOOK_URL_PAYMENTS" }
+]
+```
+
+- `python standup.py` runs **every** team and prints one standup per team.
+- `python standup.py --team "Payments"` runs just that team.
+- Each team posts to the webhook named by its `webhook_env` (falling back to `TEAMS_WEBHOOK_URL` if unset),
+  so different teams can deliver to different chats/channels.
+- `--board` overrides the board for every team in that run.
 
 ### Choosing the Jira board
 
@@ -64,6 +92,48 @@ by title, never by ID. Use `--until "YYYY-MM-DD HH:MM"` to replay a past standup
 
 Commits not yet pushed are marked `[NOT PUSHED]` in the data given to the model.
 Ticket keys such as `CR-123` in commit messages or branch names are linked to Jira tickets.
+Both the commit subject and its body are read, so detail written in the body is used too.
+
+## Posting to Teams
+
+If `TEAMS_WEBHOOK_URL` is set, the standup is also posted to Teams as an Adaptive Card, in
+addition to being printed. There is no flag: the env var turns it on.
+
+### To a channel (free, simplest)
+
+Use the classic **Incoming Webhook** connector, which accepts the Adaptive Card payload directly:
+
+1. In Teams, open the target channel, click **...** > **Connectors** (or **Manage team** > **Apps** > **Connectors**).
+2. Find **Incoming Webhook** > **Configure**, give it a name, and **Create**.
+3. Copy the URL (looks like `https://<tenant>.webhook.office.com/webhookb2/...`) and set it as
+   `TEAMS_WEBHOOK_URL` (see Setup above).
+4. Run `python standup.py` — the card appears in the channel.
+
+### To a chat (free, via Workflows)
+
+1. In Teams, open the **Workflows** app > **Create** > **Start from blank**.
+2. Trigger: **When a Teams webhook request is received**.
+3. Action: **Post card in a chat or channel** (or **Post message in a chat or channel**):
+   - **Post as:** `Flow bot`
+   - **Post in:** `Chat with Flow bot` (recipient = your email) or `Group chat`
+   - **Adaptive Card:** the trigger's **Adaptive Card** output
+4. **Save**, then copy the trigger's **HTTP POST URL** (use the copy icon; it must end with
+   `&sp=...&sv=...&sig=...`). Set it as `TEAMS_WEBHOOK_URL`.
+
+Note: the generic **HTTP Request** trigger is a premium connector; the Teams webhook trigger above is not.
+
+### Testing the webhook
+
+```
+python standup.py --test-teams           # post a fixed test card and exit
+```
+
+Notes:
+- `--dry-run`, `--list-models` and `--list-boards` never post.
+- If the post fails (bad URL, network), a warning is printed but the standup is still printed and
+  the script exits normally.
+- The webhook URL contains a signature and is a credential: keep it in the env var only, never in
+  `config.json` or a commit.
 
 ## Running it automatically before standup
 
@@ -73,11 +143,13 @@ schtasks /Create /SC WEEKLY /D MON,TUE,WED,THU,FRI /TN "standup-agent" /ST 09:20
   /TR "python C:\path\to\standup-agent\standup.py --copy"
 ```
 The task must run with the environment variables set (set them as user environment variables).
+If `TEAMS_WEBHOOK_URL` is among them, the scheduled run posts the standup to Teams automatically.
 
 Linux (cron):
 ```
 20 9 * * 1-5  cd ~/standup-agent && python3 standup.py >> standup.log 2>&1
 ```
+With `TEAMS_WEBHOOK_URL` exported, the standup is delivered to Teams on each run.
 
 ## Corporate network
 

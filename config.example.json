@@ -1,11 +1,7 @@
 {
-  "repos": [
-    "C:/Users/you/Documents/repos/example-ui"
-  ],
   "standup_time": "09:30",
   "jira": {
-    "base_url": "https://your-company.atlassian.net",
-    "board": "Smart Trade Scrum Board"
+    "base_url": "https://your-company.atlassian.net"
   },
   "gateway": {
     "base_url": "https://ai-gateway.example.com/v1",
@@ -14,5 +10,24 @@
   },
   "git": {
     "author": null
-  }
+  },
+
+  "teams": [
+    {
+      "name": "Smart Trade",
+      "board": "Smart Trade Scrum Board",
+      "repos": [
+        "C:/Users/you/Documents/repos/example-ui"
+      ],
+      "webhook_env": "TEAMS_WEBHOOK_URL_EXAMPLE_TEAM"
+    },
+    {
+      "name": "Payments",
+      "board": "Payments Scrum Board",
+      "repos": [
+        "C:/Users/you/Documents/repos/payments-api"
+      ],
+      "webhook_env": "TEAMS_WEBHOOK_URL_PAYMENTS"
+    }
+  ]
 }
