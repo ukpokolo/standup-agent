@@ -2,3 +2,6 @@ config.json
 .env
 __pycache__/
 .venv/
+*.py[cod]
+.DS_Store
+Thumbs.db
