@@ -127,6 +127,8 @@ Set `GITHUB_TOKEN` (a token with `repo` scope) and list repos under `github.repo
 
 - `github` source reads commits authored by you (or `git.author`). Pin a branch with `owner/name@branch`;
   the default branch is used otherwise. These sections appear alongside local `git` sections.
+- `github-prs` source reads commits on your **open pull requests** — work that is not on the default
+  branch yet, so `github` alone would miss it. Each commit is tagged with its PR number.
 - `author` may be a single email/login or a list — commits are often authored under more than one
   identity, and every listed author is matched (duplicates are removed).
 - `token_env` names the environment variable holding the token, so a work account and a personal
