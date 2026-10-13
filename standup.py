@@ -346,7 +346,7 @@ def github_activity(slug, number, login, since, until, token_env="GITHUB_TOKEN")
     return sorted(events, key=lambda e: e["when"])
 
 
-def collect_github_issues(repos, since, until, token_env="GITHUB_TOKEN"):
+def collect_github_issues(cfg, repos, since, until, token_env="GITHUB_TOKEN"):
     """Issues assigned to me, in the same shape collect_jira returns, so rendering is shared."""
     login = github_login(token_env)
     since_date = since.date().isoformat()
@@ -367,12 +367,14 @@ def collect_github_issues(repos, since, until, token_env="GITHUB_TOKEN"):
                 "_slug": slug,
                 "_number": number,
             })
-    for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
+    days = stale_days(cfg)
+    tickets = [t for t in tickets.values() if keep_ticket(t, cfg, since, until, days)]
+    for ticket in tickets[:MAX_TICKETS_WITH_ACTIVITY]:
         ticket["activity"] = github_activity(ticket["_slug"], ticket["_number"], login, since, until, token_env)
-    for ticket in tickets.values():
+    for ticket in tickets:
         ticket.pop("_slug", None)
         ticket.pop("_number", None)
-    return None, list(tickets.values())
+    return None, tickets
 
 
 CLICKUP_API = "https://api.clickup.com/api/v2"
@@ -430,9 +432,11 @@ def collect_clickup(cfg, since, until):
             "updated": clickup_time(task.get("date_updated") or task.get("date_created") or 0),
             "open": not done,
         })
-    for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
+    days = stale_days(cfg)
+    tickets = [t for t in tickets.values() if keep_ticket(t, cfg, since, until, days)]
+    for ticket in tickets[:MAX_TICKETS_WITH_ACTIVITY]:
         ticket["activity"] = clickup_activity(ticket["key"], me_id, since, until)
-    return None, list(tickets.values())
+    return None, tickets
 
 
 def jira_get(cfg, email, token, path, params=None):
@@ -578,6 +582,32 @@ def verify_jira_auth(cfg, email, token):
 MAX_TICKETS_WITH_ACTIVITY = 40
 
 
+def stale_days(cfg):
+    try:
+        return int(cfg.get("stale_after_days") or 0)
+    except (TypeError, ValueError):
+        sys.exit("stale_after_days must be a whole number of days (0 disables the filter).")
+
+
+def excluded_statuses(cfg):
+    return {str(s).strip().lower() for s in cfg.get("exclude_statuses", []) if str(s).strip()}
+
+
+def keep_ticket(ticket, cfg, since, until, days):
+    """Drop statuses nobody wants reported, and open tickets that have gone quiet.
+
+    exclude_statuses always wins, so an excluded status is never shown, even if it
+    moved today. Beyond that, an open ticket survives stale_after_days if it was
+    updated inside the window (a ticket put on hold yesterday is still real work).
+    """
+    if ticket["status"].strip().lower() in excluded_statuses(cfg):
+        return False
+    if not days or not ticket.get("open"):
+        return True
+    updated = datetime.strptime(ticket["updated"], "%Y-%m-%d %H:%M")
+    return updated >= until - timedelta(days=days) or since <= updated <= until
+
+
 def collect_jira(cfg, since, until, board_setting):
     """Returns (board name or None, tickets). board_setting: id, name or 'all'."""
     email = require_env("JIRA_EMAIL")
@@ -605,9 +635,11 @@ def collect_jira(cfg, since, until, board_setting):
         tickets[issue["key"]] = {**issue, "open": True}
     for issue in touched:
         tickets.setdefault(issue["key"], {**issue, "open": False})
-    for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
+    days = stale_days(cfg)
+    tickets = [t for t in tickets.values() if keep_ticket(t, cfg, since, until, days)]
+    for ticket in tickets[:MAX_TICKETS_WITH_ACTIVITY]:
         ticket["activity"] = fetch_activity(cfg, email, token, ticket["key"], me_id, since, until)
-    return (board["name"] if board else None), list(tickets.values())
+    return (board["name"] if board else None), tickets
 
 
 def render_context(since, now, git_sections, jira, board_name=None, team_name=None,
@@ -912,7 +944,7 @@ def main():
             board_name, tickets = collect_jira(cfg, since, now, team["board"])
             tickets_label, board_label, tickets_heading = "Jira", "Jira", "JIRA TICKETS ASSIGNED TO ME"
         elif want_gh_issues:
-            board_name, tickets = collect_github_issues(team["github_repos"], since, now, github_token_env)
+            board_name, tickets = collect_github_issues(cfg, team["github_repos"], since, now, github_token_env)
             tickets_label, board_label, tickets_heading = "GitHub issues", None, "GITHUB ISSUES ASSIGNED TO ME"
         elif "clickup" in sources:
             board_name, tickets = collect_clickup(cfg, since, now)

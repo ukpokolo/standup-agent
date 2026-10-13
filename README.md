@@ -117,6 +117,21 @@ so other tools can be used without touching the defaults:
 
 Adding these keys is optional; leave them out and the script behaves exactly as before.
 
+### Keeping tickets relevant
+
+Two optional keys cut noise from ticket sources (Jira, GitHub issues, ClickUp):
+
+```json
+"exclude_statuses": ["backlog"],
+"stale_after_days": 21
+```
+
+- `exclude_statuses`: status names that are never reported (case-insensitive), e.g. `backlog`. An
+  excluded status is dropped even if it changed today.
+- `stale_after_days`: an open ticket is ignored if it has not been updated within this many days.
+  Anything updated inside the report window is always kept, so a ticket that was put on hold or
+  moved recently still appears. `0` or absent disables the filter.
+
 ### GitHub
 
 Set `GITHUB_TOKEN` (a token with `repo` scope) and list repos under `github.repos` as `owner/name`:

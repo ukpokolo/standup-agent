@@ -25,6 +25,9 @@
     "list": null
   },
 
+  "exclude_statuses": ["backlog"],
+  "stale_after_days": 21,
+
   "teams": [
     {
       "name": "Alpha",

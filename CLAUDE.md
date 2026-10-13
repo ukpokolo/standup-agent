@@ -10,3 +10,4 @@ decisions and `docs/plan.md` for the original plan.
 - Jira: use `/rest/api/3/search/jql` (the old `/search` endpoint is removed from Jira Cloud).
 - Gateway: OpenAI-compatible (`/chat/completions`, `/models`); base URL and model id come from config (confirm the id with `--list-models`).
 - `sources` / `outputs` in config choose which integrations run; both default to git + Jira and Teams. Optional sources: `github` (commits via API), `github-prs` (open PR commits), `github-issues`, `clickup`. Optional output: `slack`.
+- Top-level `stale_after_days` and `exclude_statuses` filter ticket sources (open tickets older than N days are dropped; in-window tickets always kept; excluded status names are never reported).
