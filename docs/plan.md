@@ -18,7 +18,7 @@ Steps once approved:
 1. Create the folder, run `git init` (local only; **no remote is created or pushed**, since creating a Bitbucket repo needs
    your workspace/credentials and is outward-facing. Say so if you want that added.)
 2. Write the files below, make an initial commit.
-3. Open it in VS Code: `code "C:\Users\you\Documents\repos\standup-agent"` (`code.cmd` found on this machine).
+3. Open it in VS Code: `code "path/to/standup-agent"`.
 4. Chat transfer: a conversation can't be moved between sessions, so carry the context over as files in the repo:
    - `docs/design-notes.md`: decisions, Jira facts, gateway details (base URL and model from config), standup-time window, open items.
    - `docs/plan.md`: a copy of this plan.
@@ -58,7 +58,7 @@ Steps once approved:
 7. **Corporate network**: honour `HTTPS_PROXY`/`HTTP_PROXY` (requests does this by default) and add a
    `gateway.ca_bundle` option in case the gateway uses an internal CA. See the corp-proxy note in memory.
 
-## Jira facts (from the Example Corp Jira API doc)
+## Jira facts (from the Jira Cloud API docs)
 - Base URL `https://your-company.atlassian.net`, REST v3, Basic auth = Atlassian email + API token.
 - The doc lists `GET /rest/api/3/search`, which Atlassian has removed from Jira Cloud; use `GET /rest/api/3/search/jql` (same JQL, `maxResults`, `fields`).
 - JQL uses `assignee = currentUser()`, so no account ID is needed.
