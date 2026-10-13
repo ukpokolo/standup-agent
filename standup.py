@@ -35,6 +35,11 @@ HTTP.mount("https://", HTTPAdapter(max_retries=Retry(
 HTTP.mount("http://", HTTP.adapters["https://"])
 TICKET_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
+# Which context sources run and which sinks receive the standup, when config.json
+# says nothing. These match the original behaviour, so existing setups are unaffected.
+DEFAULT_SOURCES = ("git", "jira")
+DEFAULT_OUTPUTS = ("teams",)
+
 SYSTEM_PROMPT = (
     "You write a daily standup update that a software engineer will read aloud in a standup meeting. "
     "Write in the first person ('I'), in plain, natural, spoken English, as if the engineer is talking to "
@@ -472,6 +477,19 @@ def test_teams():
     send_to_teams("standup-agent test\n\nIf you can read this, the webhook works.")
 
 
+def post_standup(cfg, team, text):
+    """Send the finished standup to every enabled sink.
+
+    Sinks are independent: a failure in one is reported but never stops another,
+    so a broken webhook cannot lose the standup that was already printed.
+    """
+    for name in enabled_outputs(cfg):
+        if name == "teams":
+            send_to_teams(text, team_webhook_url(team))
+        else:
+            print(f"\n(unknown output '{name}' skipped)")
+
+
 def resolve_teams(cfg, args):
     """The teams to run, honouring --team / --all-teams.
 
@@ -501,6 +519,27 @@ def resolve_teams(cfg, args):
 
 def team_webhook_url(team):
     return os.environ.get(team.get("webhook_env") or "TEAMS_WEBHOOK_URL")
+
+
+def splits(text, default):
+    """A comma/space separated list from config, or the default when absent.
+
+    Keeping the default means existing configs (which set neither) behave exactly
+    as before: git + Jira in, Teams out.
+    """
+    if text is None:
+        return list(default)
+    if isinstance(text, (list, tuple)):
+        return [str(x).strip() for x in text if str(x).strip()]
+    return [p for p in re.split(r"[,\s]+", str(text).strip()) if p]
+
+
+def enabled_sources(cfg):
+    return splits(cfg.get("sources"), DEFAULT_SOURCES)
+
+
+def enabled_outputs(cfg):
+    return splits(cfg.get("outputs"), DEFAULT_OUTPUTS)
 
 
 def main():
@@ -551,13 +590,15 @@ def main():
         for team in teams:
             team["board"] = args.board
     author = (cfg.get("git") or {}).get("author")
+    sources = enabled_sources(cfg)
     multi = len(teams) > 1
 
     for team in teams:
         if multi and team["name"]:
             print(f"===== {team['name']} =====")
-        git_sections = collect_git(team["repos"], author, since, now)
-        board_name, jira = (None, None) if args.skip_jira else collect_jira(cfg, since, now, team["board"])
+        git_sections = collect_git(team["repos"], author, since, now) if "git" in sources else []
+        want_jira = "jira" in sources and not args.skip_jira
+        board_name, jira = collect_jira(cfg, since, now, team["board"]) if want_jira else (None, None)
         context = render_context(since, now, git_sections, jira, board_name, team["name"])
 
         if args.dry_run:
@@ -568,7 +609,7 @@ def main():
         print(standup)
         if args.copy:
             copy_to_clipboard(standup)
-        send_to_teams(standup, team_webhook_url(team))
+        post_standup(cfg, team, standup)
 
 
 if __name__ == "__main__":
