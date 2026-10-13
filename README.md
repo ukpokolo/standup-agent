@@ -30,6 +30,9 @@ gateway model, with or without tool calling.
    $env:JIRA_API_TOKEN = "<jira api token>"
    $env:AI_GATEWAY_API_KEY = "<gateway key>"
    $env:TEAMS_WEBHOOK_URL = "<teams workflow webhook url>"   # optional, see below
+   $env:SLACK_WEBHOOK_URL = "<slack incoming webhook url>"   # optional, see below
+   $env:GITHUB_TOKEN = "<github token>"                      # optional, for the github sources
+   $env:CLICKUP_API_TOKEN = "<clickup token>"                # optional, for the clickup source
    ```
    Linux / macOS:
    ```bash
@@ -37,6 +40,9 @@ gateway model, with or without tool calling.
    export JIRA_API_TOKEN="<jira api token>"
    export AI_GATEWAY_API_KEY="<gateway key>"
    export TEAMS_WEBHOOK_URL="<teams workflow webhook url>"   # optional, see below
+   export SLACK_WEBHOOK_URL="<slack incoming webhook url>"   # optional, see below
+   export GITHUB_TOKEN="<github token>"                      # optional, for the github sources
+   export CLICKUP_API_TOKEN="<clickup token>"                # optional, for the clickup source
    ```
    Create the Jira token at https://id.atlassian.com/manage-profile/security/api-tokens
    (use the plain "Create API token" button, not the scoped one).
@@ -94,6 +100,52 @@ Commits not yet pushed are marked `[NOT PUSHED]` in the data given to the model.
 Ticket keys such as `ABC-123` in commit messages or branch names are linked to Jira tickets.
 Both the commit subject and its body are read, so detail written in the body is used too.
 
+## Sources and outputs
+
+By default the script reads local git repos and Jira, and posts to Teams. Two config keys change that,
+so other tools can be used without touching the defaults:
+
+```json
+"sources": ["git", "jira", "github", "github-issues", "clickup"],
+"outputs": ["teams", "slack"]
+```
+
+- `sources` (default `["git", "jira"]`): which context is collected. `git` reads local clones;
+  `github` reads commits from the GitHub API (no clone); `jira`, `github-issues` and `clickup` are ticket
+  sources — use one at a time.
+- `outputs` (default `["teams"]`): where the finished standup is posted. `teams` and `slack` can both be on.
+
+Adding these keys is optional; leave them out and the script behaves exactly as before.
+
+### GitHub
+
+Set `GITHUB_TOKEN` (a token with `repo` scope) and list repos under `github.repos` as `owner/name`:
+
+```json
+"github": { "repos": ["your-org/your-repo"] }
+```
+
+- `github` source reads commits authored by you (or `git.author`). Pin a branch with `owner/name@branch`;
+  the default branch is used otherwise. These sections appear alongside local `git` sections.
+- `github-issues` source lists issues assigned to you, with comments and state changes in the window.
+- Per team, `github_repos` overrides the top-level list.
+
+### ClickUp
+
+Set `CLICKUP_API_TOKEN` and point the source at a workspace or a single list (one of them is required):
+
+```json
+"clickup": { "team": "1234567", "list": null }
+```
+
+- `clickup` source lists tasks assigned to you (or `clickup.assignee`), with comments in the window.
+
+### Slack
+
+Set `SLACK_WEBHOOK_URL` and add `slack` to `outputs`. Create an incoming webhook in your Slack
+workspace (Apps > Incoming Webhooks) and copy its URL. Per team, `slack_webhook_env` names a different
+webhook env var. `python standup.py --test-slack` posts a test message.
+
 ## Posting to Teams
 
 If `TEAMS_WEBHOOK_URL` is set, the standup is also posted to Teams as an Adaptive Card, in
@@ -126,6 +178,7 @@ Note: the generic **HTTP Request** trigger is a premium connector; the Teams web
 
 ```
 python standup.py --test-teams           # post a fixed test card and exit
+python standup.py --test-slack           # post a fixed test message and exit
 ```
 
 Notes:

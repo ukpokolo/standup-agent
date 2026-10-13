@@ -1,7 +1,7 @@
 # Plan: support more services (Slack, GitHub, ClickUp, ...)
 
-Status: proposed, not built. Existing teams/Jira/git behaviour stays the default and unchanged;
-every new service is opt-in via config and env vars.
+Status: implemented. Existing teams/Jira/git behaviour is unchanged; every new service is opt-in
+via config and env vars.
 
 ## Guiding idea
 

@@ -12,6 +12,17 @@
     "author": null
   },
 
+  "sources": ["git", "jira"],
+  "outputs": ["teams"],
+
+  "github": {
+    "repos": ["your-org/your-repo"]
+  },
+  "clickup": {
+    "team": null,
+    "list": null
+  },
+
   "teams": [
     {
       "name": "Alpha",
