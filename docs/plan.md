@@ -6,14 +6,13 @@ sends them to a model on the company AI gateway, and prints a ready-to-paste sta
 (Yesterday / Today / Blockers). The model never fetches anything itself; a small Python script collects
 the data and passes it in as text, so it works with any gateway model, with or without tool-calling.
 
-Decisions made: Python, Jira Cloud, OpenAI-compatible gateway (`https://ai-gateway.example.com/v1`, from
-opencode.json), several repos from a config list. Runs on Windows and on a colleague's Linux laptop.
+Decisions made: Python, Jira Cloud, OpenAI-compatible gateway (base URL from `config.json`, for example
+`https://ai-gateway.example.com/v1`), several repos from a config list. Runs on Windows and on a colleague's Linux laptop.
 
 ## Location and setup (updated)
 Jira auth now works (user confirmed), so the Jira integration is built in full; `--skip-jira` stays as a fallback flag.
 
-New repo `standup-agent` in `C:\Users\you\Documents\repos\standup-agent\`
-(there is no `bitbucket` folder; `repos` is where example-ui lives, so that is assumed to be the target).
+New repo `standup-agent` in a local working folder.
 
 Steps once approved:
 1. Create the folder, run `git init` (local only; **no remote is created or pushed**, since creating a Bitbucket repo needs
@@ -21,10 +20,10 @@ Steps once approved:
 2. Write the files below, make an initial commit.
 3. Open it in VS Code: `code "C:\Users\you\Documents\repos\standup-agent"` (`code.cmd` found on this machine).
 4. Chat transfer: a conversation can't be moved between sessions, so carry the context over as files in the repo:
-   - `docs/design-notes.md`: decisions, Jira facts, gateway details (`https://ai-gateway.example.com/v1`, the model), standup-time window, open items.
+   - `docs/design-notes.md`: decisions, Jira facts, gateway details (base URL and model from config), standup-time window, open items.
    - `docs/plan.md`: a copy of this plan.
    - `CLAUDE.md`: short project brief so a new Claude Code session opened in that folder starts with the context.
-   - **Excluded on purpose:** the API token (it was pasted in chat and should be revoked/rotated), and the example-ui backend-bug discussion, which is unrelated.
+   - **Excluded on purpose:** the API token (it was pasted in chat and should be revoked/rotated).
 
     standup.py            # single-file script, only dependency: requests
     config.example.json   # copy to config.json (git-ignored) and fill in
@@ -37,7 +36,7 @@ Steps once approved:
 1. **Config + secrets**
    - `config.json`: `repos` (list of paths), `standup_time` (e.g. `"09:30"`, 24h local time),
      `jira.base_url` (https://<co>.atlassian.net), `gateway.base_url`,
-     `gateway.model` (the model; exact gateway model id confirmed via `--list-models`), optional `git.author`.
+     `gateway.model` (model id from config; confirmed via `--list-models`), optional `git.author`.
    - Secrets only from env vars: `JIRA_EMAIL`, `JIRA_API_TOKEN`, `AI_GATEWAY_API_KEY`. Never in the config or prompt.
 2. **Git** (per repo, via `subprocess` `git`)
    - Author defaults to `git config user.email` in that repo.
@@ -71,7 +70,7 @@ The script itself runs on demand. README documents running it automatically shor
 (e.g. 10 min before `standup_time`): Windows Task Scheduler on your machine, `cron` on Linux.
 
 ## Open items to confirm at build time
-- Exact gateway id for the model (find with `--list-models`).
+- Exact gateway model id (find with `--list-models`).
 - Whether Jira Cloud API tokens are allowed at your company (create at id.atlassian.com -> Security -> API tokens).
 - Repo paths for the config list.
 

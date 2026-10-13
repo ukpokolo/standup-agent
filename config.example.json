@@ -5,7 +5,7 @@
   },
   "gateway": {
     "base_url": "https://ai-gateway.example.com/v1",
-    "model": "the-model",
+    "model": "your-model-id",
     "ca_bundle": null
   },
   "git": {
@@ -14,20 +14,20 @@
 
   "teams": [
     {
-      "name": "Smart Trade",
-      "board": "Smart Trade Scrum Board",
+      "name": "Alpha",
+      "board": "Alpha Scrum Board",
       "repos": [
-        "C:/Users/you/Documents/repos/example-ui"
+        "C:/Users/you/Documents/repos/alpha-ui"
       ],
-      "webhook_env": "TEAMS_WEBHOOK_URL_EXAMPLE_TEAM"
+      "webhook_env": "TEAMS_WEBHOOK_URL_ALPHA"
     },
     {
-      "name": "Payments",
-      "board": "Payments Scrum Board",
+      "name": "Beta",
+      "board": "Beta Scrum Board",
       "repos": [
-        "C:/Users/you/Documents/repos/payments-api"
+        "C:/Users/you/Documents/repos/beta-api"
       ],
-      "webhook_env": "TEAMS_WEBHOOK_URL_PAYMENTS"
+      "webhook_env": "TEAMS_WEBHOOK_URL_BETA"
     }
   ]
 }

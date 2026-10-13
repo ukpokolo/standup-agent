@@ -10,8 +10,8 @@ it in as text.
 - Jira: Jira Cloud, `https://your-company.atlassian.net`, REST v3, Basic auth with Atlassian email + API token.
   The internal Jira API doc lists `GET /rest/api/3/search`, but that endpoint has been removed by Atlassian, so the
   script uses `GET /rest/api/3/search/jql`. JQL uses `assignee = currentUser()`, so no account ID is needed.
-- Gateway: OpenAI-compatible API, base URL `https://ai-gateway.example.com/v1` (from the user's opencode config).
-  Model: the model; the exact id on the gateway must be confirmed with `--list-models`.
+- Gateway: OpenAI-compatible API, base URL from `config.json` (for example `https://ai-gateway.example.com/v1`).
+  Model id from config; confirm the exact id with `--list-models`.
 - Repos: several, listed in `config.json`.
 - Time window: driven by the standup time. Start = the previous working day's standup time (Monday goes back to
   Friday), end = now. Overridable with `--standup-time` or `--since`.
@@ -24,7 +24,7 @@ it in as text.
 - A token was pasted into the planning chat and should be revoked and replaced.
 
 ## Open items
-- Confirm the the model model id and get an `AI_GATEWAY_API_KEY`.
+- Confirm the model id and get an `AI_GATEWAY_API_KEY`.
 - Python was not installed on the build machine, so the script has not been run yet. First run: `--list-models`,
   then `--dry-run`, then the real thing.
 - No Bitbucket remote has been created; add one when wanted.
