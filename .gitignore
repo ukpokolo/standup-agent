@@ -1,7 +1,9 @@
 config.json
+config.pipeline.json
 .env
 __pycache__/
 .venv/
 *.py[cod]
+*.log
 .DS_Store
 Thumbs.db
