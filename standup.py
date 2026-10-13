@@ -313,6 +313,66 @@ def collect_github_issues(repos, since, until):
     return None, list(tickets.values())
 
 
+CLICKUP_API = "https://api.clickup.com/api/v2"
+
+
+def clickup_get(path, params=None):
+    token = require_env("CLICKUP_API_TOKEN")
+    resp = HTTP.get(CLICKUP_API + path, params=params,
+                    headers={"Authorization": token, "Accept": "application/json"}, timeout=30)
+    if resp.status_code == 401:
+        sys.exit("ClickUp rejected CLICKUP_API_TOKEN (HTTP 401). Check the token is still valid.")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def clickup_time(ms):
+    return datetime.fromtimestamp(int(ms) / 1000).strftime("%Y-%m-%d %H:%M")
+
+
+def clickup_activity(task_id, me_id, since, until):
+    """Comments on one task inside the window (ClickUp exposes no simple status-change log)."""
+    events = []
+    for c in clickup_get(f"/task/{task_id}/comment").get("comments", []):
+        when = datetime.fromtimestamp(int(c.get("date", 0)) / 1000)
+        if not (since <= when <= until):
+            continue
+        text = " ".join((c.get("comment_text") or "").split())
+        user = c.get("user") or {}
+        who = "me" if str(user.get("id", "")) == me_id else (user.get("username") or "someone")
+        events.append({"when": when, "kind": "comment", "by": who,
+                       "text": text[:500] + ("..." if len(text) > 500 else "")})
+    return sorted(events, key=lambda e: e["when"])
+
+
+def collect_clickup(cfg, since, until):
+    """Tasks assigned to me, in the same shape collect_jira returns."""
+    cu = cfg.get("clickup") or {}
+    team_id, list_id = cu.get("team"), cu.get("list")
+    if not team_id and not list_id:
+        sys.exit("ClickUp source is enabled but neither clickup.team nor clickup.list is set in config.")
+    me_id = str((clickup_get("/user").get("user") or {}).get("id", ""))
+    base = f"/list/{list_id}/task" if list_id else f"/team/{team_id}/task"
+    common = {"assignees[]": str(cu.get("assignee") or me_id), "subtasks": "true"}
+    open_tasks = clickup_get(base, {**common, "include_closed": "false"}).get("tasks", [])
+    touched = clickup_get(base, {**common, "include_closed": "true",
+                                 "date_updated_gt": str(int(since.timestamp() * 1000))}).get("tasks", [])
+    tickets = {}
+    for task in open_tasks + touched:
+        status = task.get("status") or {}
+        done = status.get("type") in ("done", "closed")
+        tickets.setdefault(task["id"], {
+            "key": task["id"],
+            "summary": task.get("name", ""),
+            "status": status.get("status") or status.get("name") or "",
+            "updated": clickup_time(task.get("date_updated") or task.get("date_created") or 0),
+            "open": not done,
+        })
+    for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
+        ticket["activity"] = clickup_activity(ticket["key"], me_id, since, until)
+    return None, list(tickets.values())
+
+
 def jira_get(cfg, email, token, path, params=None):
     url = cfg["jira"]["base_url"].rstrip("/") + path
     resp = HTTP.get(
@@ -787,6 +847,9 @@ def main():
         elif want_gh_issues:
             board_name, tickets = collect_github_issues(team["github_repos"], since, now)
             tickets_label, board_label, tickets_heading = "GitHub issues", None, "GITHUB ISSUES ASSIGNED TO ME"
+        elif "clickup" in sources:
+            board_name, tickets = collect_clickup(cfg, since, now)
+            tickets_label, board_label, tickets_heading = "ClickUp tasks", None, "CLICKUP TASKS ASSIGNED TO ME"
         else:
             board_name, tickets = None, None
             tickets_label, board_label, tickets_heading = "Jira", "Jira", "JIRA TICKETS ASSIGNED TO ME"
