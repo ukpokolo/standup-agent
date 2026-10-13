@@ -122,11 +122,16 @@ Adding these keys is optional; leave them out and the script behaves exactly as 
 Set `GITHUB_TOKEN` (a token with `repo` scope) and list repos under `github.repos` as `owner/name`:
 
 ```json
-"github": { "repos": ["your-org/your-repo"] }
+"github": { "token_env": "GITHUB_TOKEN", "author": ["you@example.com"], "repos": ["your-org/your-repo"] }
 ```
 
 - `github` source reads commits authored by you (or `git.author`). Pin a branch with `owner/name@branch`;
   the default branch is used otherwise. These sections appear alongside local `git` sections.
+- `author` may be a single email/login or a list — commits are often authored under more than one
+  identity, and every listed author is matched (duplicates are removed).
+- `token_env` names the environment variable holding the token, so a work account and a personal
+  account can be used from different configs (e.g. `GITHUB_TOKEN` and `GITHUB_TOKEN_PERSONAL`).
+  Anyone with push access to the repo can use their own token; no clone is needed.
 - `github-issues` source lists issues assigned to you, with comments and state changes in the window.
 - Per team, `github_repos` overrides the top-level list.
 

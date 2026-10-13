@@ -16,6 +16,8 @@
   "outputs": ["teams"],
 
   "github": {
+    "token_env": "GITHUB_TOKEN",
+    "author": ["you@example.com"],
     "repos": ["your-org/your-repo"]
   },
   "clickup": {
