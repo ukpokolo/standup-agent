@@ -181,8 +181,8 @@ def collect_git(repos, author_override, since, until):
 GITHUB_API = "https://api.github.com"
 
 
-def github_headers():
-    token = require_env("GITHUB_TOKEN")
+def github_headers(token_env="GITHUB_TOKEN"):
+    token = require_env(token_env)
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -190,25 +190,30 @@ def github_headers():
     }
 
 
-def github_get(path, params=None):
-    resp = HTTP.get(GITHUB_API + path, params=params, headers=github_headers(), timeout=30)
+def github_get(path, params=None, token_env="GITHUB_TOKEN"):
+    resp = HTTP.get(GITHUB_API + path, params=params, headers=github_headers(token_env), timeout=30)
     if resp.status_code == 401:
-        sys.exit("GitHub rejected GITHUB_TOKEN (HTTP 401). Check the token has not expired.")
+        sys.exit(f"GitHub rejected {token_env} (HTTP 401). Check the token has not expired.")
     resp.raise_for_status()
     return resp
 
 
-def github_login():
+def github_login(token_env="GITHUB_TOKEN"):
     """The authenticated user's login, used to filter commits when no author is configured."""
-    return github_get("/user").json().get("login")
+    return github_get("/user", token_env=token_env).json().get("login")
 
 
-def collect_github(repos, author_override, since, until):
+def collect_github(repos, authors, since, until, token_env="GITHUB_TOKEN"):
     """Commits straight from the GitHub API, so no local clone is needed.
 
-    Produces the same section/row shape as collect_git, so render_context is shared.
+    'authors' is one email/login or a list of them (commits are often authored under
+    more than one identity); empty means the token's own login. Produces the same
+    section/row shape as collect_git, so render_context is shared.
     """
-    author = author_override or github_login()
+    if not authors:
+        authors = [github_login(token_env)]
+    elif isinstance(authors, str):
+        authors = [authors]
     since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     until_str = ceil_to_minute(until).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     sections = []
@@ -218,31 +223,36 @@ def collect_github(repos, author_override, since, until):
         if "@" in slug:
             slug, ref = slug.split("@", 1)  # owner/name@branch
         name = slug.split("/")[-1]
-        rows = []
-        url = f"/repos/{slug}/commits"
-        params = {"since": since_str, "until": until_str, "author": author, "per_page": 100}
-        if ref:
-            params["sha"] = ref
+        rows, seen = [], set()
         try:
-            while url:
-                resp = github_get(url, params)
-                for item in resp.json():
-                    commit = item.get("commit") or {}
-                    message = commit.get("message", "")
-                    subject, _, body = message.partition("\n")
-                    rows.append({
-                        "sha": (item.get("sha") or "")[:7],
-                        "date": (commit.get("author") or {}).get("date", "")[:16].replace("T", " "),
-                        "subject": subject,
-                        "body": " ".join(body.split()),
-                        "pushed": True,
-                        "tickets": sorted(set(TICKET_RE.findall(subject + " " + body))),
-                    })
-                url = resp.links.get("next", {}).get("url")
-                params = None  # the next link already carries the query string
+            for author in authors:
+                params = {"since": since_str, "until": until_str, "author": author, "per_page": 100}
+                if ref:
+                    params["sha"] = ref
+                url = f"/repos/{slug}/commits"
+                while url:
+                    resp = github_get(url, params, token_env=token_env)
+                    for item in resp.json():
+                        if item.get("sha") in seen:
+                            continue
+                        seen.add(item.get("sha"))
+                        commit = item.get("commit") or {}
+                        message = commit.get("message", "")
+                        subject, _, body = message.partition("\n")
+                        rows.append({
+                            "sha": (item.get("sha") or "")[:7],
+                            "date": (commit.get("author") or {}).get("date", "")[:16].replace("T", " "),
+                            "subject": subject,
+                            "body": " ".join(body.split()),
+                            "pushed": True,
+                            "tickets": sorted(set(TICKET_RE.findall(subject + " " + body))),
+                        })
+                    url = resp.links.get("next", {}).get("url")
+                    params = None  # the next link already carries the query string
         except requests.RequestException as exc:
             sections.append({"repo": f"github:{slug}", "error": str(exc)})
             continue
+        rows.sort(key=lambda r: r["date"], reverse=True)
         sections.append({"repo": f"github:{name}", "commits": rows})
     return sections
 
@@ -252,21 +262,22 @@ def parse_github_time(text):
     return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
 
 
-def github_search_issues(query):
+def github_search_issues(query, token_env="GITHUB_TOKEN"):
     items, url = [], "/search/issues"
     params = {"q": query, "per_page": 100}
     while url:
-        resp = github_get(url, params)
+        resp = github_get(url, params, token_env=token_env)
         items += resp.json().get("items", [])
         url = resp.links.get("next", {}).get("url")
         params = None
     return items
 
 
-def github_activity(slug, number, login, since, until):
+def github_activity(slug, number, login, since, until, token_env="GITHUB_TOKEN"):
     """Comments and state changes on one issue inside the window, via the timeline API."""
     events = []
-    timeline = github_get(f"/repos/{slug}/issues/{number}/timeline", {"per_page": 100}).json()
+    timeline = github_get(f"/repos/{slug}/issues/{number}/timeline", {"per_page": 100},
+                          token_env=token_env).json()
     for ev in timeline:
         when = parse_github_time(ev.get("created_at") or ev.get("submitted_at") or "")
         if not (since <= when <= until):
@@ -284,15 +295,15 @@ def github_activity(slug, number, login, since, until):
     return sorted(events, key=lambda e: e["when"])
 
 
-def collect_github_issues(repos, since, until):
+def collect_github_issues(repos, since, until, token_env="GITHUB_TOKEN"):
     """Issues assigned to me, in the same shape collect_jira returns, so rendering is shared."""
-    login = github_login()
+    login = github_login(token_env)
     since_date = since.date().isoformat()
     tickets = {}
     for slug in repos:
         slug = str(slug).split("@", 1)[0].strip()  # issues are branch-independent
-        open_items = github_search_issues(f"is:open assignee:{login} repo:{slug}")
-        touched = github_search_issues(f"assignee:{login} repo:{slug} updated:>={since_date}")
+        open_items = github_search_issues(f"is:open assignee:{login} repo:{slug}", token_env)
+        touched = github_search_issues(f"assignee:{login} repo:{slug} updated:>={since_date}", token_env)
         for item in open_items + touched:
             number = item["number"]
             key = f"{slug}#{number}"
@@ -306,7 +317,7 @@ def collect_github_issues(repos, since, until):
                 "_number": number,
             })
     for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
-        ticket["activity"] = github_activity(ticket["_slug"], ticket["_number"], login, since, until)
+        ticket["activity"] = github_activity(ticket["_slug"], ticket["_number"], login, since, until, token_env)
     for ticket in tickets.values():
         ticket.pop("_slug", None)
         ticket.pop("_number", None)
@@ -830,6 +841,9 @@ def main():
         for team in teams:
             team["board"] = args.board
     author = (cfg.get("git") or {}).get("author")
+    gh = cfg.get("github") or {}
+    github_author = gh.get("author") or author
+    github_token_env = gh.get("token_env", "GITHUB_TOKEN")
     sources = enabled_sources(cfg)
     multi = len(teams) > 1
 
@@ -838,14 +852,14 @@ def main():
             print(f"===== {team['name']} =====")
         git_sections = collect_git(team["repos"], author, since, now) if "git" in sources else []
         if "github" in sources:
-            git_sections += collect_github(team["github_repos"], author, since, now)
+            git_sections += collect_github(team["github_repos"], github_author, since, now, github_token_env)
         want_jira = "jira" in sources and not args.skip_jira
         want_gh_issues = "github-issues" in sources
         if want_jira:
             board_name, tickets = collect_jira(cfg, since, now, team["board"])
             tickets_label, board_label, tickets_heading = "Jira", "Jira", "JIRA TICKETS ASSIGNED TO ME"
         elif want_gh_issues:
-            board_name, tickets = collect_github_issues(team["github_repos"], since, now)
+            board_name, tickets = collect_github_issues(team["github_repos"], since, now, github_token_env)
             tickets_label, board_label, tickets_heading = "GitHub issues", None, "GITHUB ISSUES ASSIGNED TO ME"
         elif "clickup" in sources:
             board_name, tickets = collect_clickup(cfg, since, now)
