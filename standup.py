@@ -48,9 +48,10 @@ SYSTEM_PROMPT = (
     "Under each heading use short bullet points, at most 5 per section, each one a single natural sentence "
     "that starts with a verb (for example 'Finished ...', 'Started ...', 'Fixed ...'). "
     "Only mention work that appears in the data provided; never invent work. "
-    "Refer to Jira tickets by their title, written in plain readable words, and never output ticket IDs or keys "
-    "(like ABC-123): readers find IDs meaningless. Use the ticket keys in the data only to match commits to "
-    "their ticket title. If a commit mentions a key with no known title, describe the work instead. "
+    "Refer to tickets (Jira issues, GitHub issues, ClickUp tasks) by their title, written in plain readable words, "
+    "and never output IDs or keys (like ABC-123 or owner/repo#12): readers find IDs meaningless. Use the keys in "
+    "the data only to match commits to their ticket title. If a commit mentions a key with no known title, "
+    "describe the work instead. "
     "YESTERDAY = what I did in the report window: commits, tickets I moved between statuses, tickets closed, "
     "and comments I made. Also include feedback I received: if someone else (for example QA) commented on a "
     "ticket or moved it back to development in the window, say that feedback was received on that ticket and "
@@ -246,6 +247,72 @@ def collect_github(repos, author_override, since, until):
     return sections
 
 
+def parse_github_time(text):
+    """GitHub timestamps are ISO 8601 UTC; convert to naive local time like Jira."""
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+
+
+def github_search_issues(query):
+    items, url = [], "/search/issues"
+    params = {"q": query, "per_page": 100}
+    while url:
+        resp = github_get(url, params)
+        items += resp.json().get("items", [])
+        url = resp.links.get("next", {}).get("url")
+        params = None
+    return items
+
+
+def github_activity(slug, number, login, since, until):
+    """Comments and state changes on one issue inside the window, via the timeline API."""
+    events = []
+    timeline = github_get(f"/repos/{slug}/issues/{number}/timeline", {"per_page": 100}).json()
+    for ev in timeline:
+        when = parse_github_time(ev.get("created_at") or ev.get("submitted_at") or "")
+        if not (since <= when <= until):
+            continue
+        kind = ev.get("event")
+        if kind == "commented":
+            text = " ".join((ev.get("body") or "").split())
+            who = (ev.get("actor") or ev.get("user") or {}).get("login") or "someone"
+            events.append({"when": when, "kind": "comment", "by": "me" if who == login else who,
+                           "text": text[:500] + ("..." if len(text) > 500 else "")})
+        elif kind in ("closed", "reopened"):
+            who = (ev.get("actor") or {}).get("login") or "someone"
+            events.append({"when": when, "kind": "status", "by": "me" if who == login else who,
+                           "text": f"-> {kind}"})
+    return sorted(events, key=lambda e: e["when"])
+
+
+def collect_github_issues(repos, since, until):
+    """Issues assigned to me, in the same shape collect_jira returns, so rendering is shared."""
+    login = github_login()
+    since_date = since.date().isoformat()
+    tickets = {}
+    for slug in repos:
+        slug = str(slug).split("@", 1)[0].strip()  # issues are branch-independent
+        open_items = github_search_issues(f"is:open assignee:{login} repo:{slug}")
+        touched = github_search_issues(f"assignee:{login} repo:{slug} updated:>={since_date}")
+        for item in open_items + touched:
+            number = item["number"]
+            key = f"{slug}#{number}"
+            tickets.setdefault(key, {
+                "key": key,
+                "summary": item.get("title", ""),
+                "status": "open" if (item.get("state") == "open") else "closed",
+                "updated": parse_github_time(item["updated_at"]).strftime("%Y-%m-%d %H:%M"),
+                "open": item.get("state") == "open",
+                "_slug": slug,
+                "_number": number,
+            })
+    for ticket in list(tickets.values())[:MAX_TICKETS_WITH_ACTIVITY]:
+        ticket["activity"] = github_activity(ticket["_slug"], ticket["_number"], login, since, until)
+    for ticket in tickets.values():
+        ticket.pop("_slug", None)
+        ticket.pop("_number", None)
+    return None, list(tickets.values())
+
+
 def jira_get(cfg, email, token, path, params=None):
     url = cfg["jira"]["base_url"].rstrip("/") + path
     resp = HTTP.get(
@@ -421,12 +488,14 @@ def collect_jira(cfg, since, until, board_setting):
     return (board["name"] if board else None), list(tickets.values())
 
 
-def render_context(since, now, git_sections, jira, board_name=None, team_name=None):
+def render_context(since, now, git_sections, jira, board_name=None, team_name=None,
+                   board_label="Jira", tickets_name="Jira", tickets_heading="JIRA TICKETS ASSIGNED TO ME"):
     lines = []
     if team_name:
         lines.append(f"Team: {team_name}")
     lines.append(f"Report window: {since:%Y-%m-%d %H:%M} to {now:%Y-%m-%d %H:%M}")
-    lines.append(f"Jira board: {board_name}" if board_name else "Jira board: all boards")
+    if board_label:
+        lines.append(f"{board_label} board: {board_name}" if board_name else f"{board_label} board: all boards")
     lines += ["", "== GIT COMMITS =="]
     for sec in git_sections:
         lines.append(f"[{sec['repo']}]")
@@ -441,9 +510,9 @@ def render_context(since, now, git_sections, jira, board_name=None, team_name=No
             lines.append(f"  {c['date']} {c['sha']} {c['subject']}{tickets}{tag}")
             if c.get("body"):
                 lines.append(f"      details: {c['body'][:300]}")
-    lines += ["", "== JIRA TICKETS ASSIGNED TO ME =="]
+    lines += ["", f"== {tickets_heading} =="]
     if jira is None:
-        lines.append("(Jira skipped)")
+        lines.append(f"({tickets_name} skipped)")
     elif not jira:
         lines.append("(none)")
     else:
@@ -711,8 +780,20 @@ def main():
         if "github" in sources:
             git_sections += collect_github(team["github_repos"], author, since, now)
         want_jira = "jira" in sources and not args.skip_jira
-        board_name, jira = collect_jira(cfg, since, now, team["board"]) if want_jira else (None, None)
-        context = render_context(since, now, git_sections, jira, board_name, team["name"])
+        want_gh_issues = "github-issues" in sources
+        if want_jira:
+            board_name, tickets = collect_jira(cfg, since, now, team["board"])
+            tickets_label, board_label, tickets_heading = "Jira", "Jira", "JIRA TICKETS ASSIGNED TO ME"
+        elif want_gh_issues:
+            board_name, tickets = collect_github_issues(team["github_repos"], since, now)
+            tickets_label, board_label, tickets_heading = "GitHub issues", None, "GITHUB ISSUES ASSIGNED TO ME"
+        else:
+            board_name, tickets = None, None
+            tickets_label, board_label, tickets_heading = "Jira", "Jira", "JIRA TICKETS ASSIGNED TO ME"
+        context = render_context(
+            since, now, git_sections, tickets, board_name, team["name"],
+            board_label=board_label, tickets_name=tickets_label, tickets_heading=tickets_heading,
+        )
 
         if args.dry_run:
             print(context)
