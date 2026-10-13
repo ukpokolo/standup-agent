@@ -257,6 +257,57 @@ def collect_github(repos, authors, since, until, token_env="GITHUB_TOKEN"):
     return sections
 
 
+def collect_github_prs(repos, authors, since, until, token_env="GITHUB_TOKEN"):
+    """Commits on my open pull requests, which are not on the default branch yet.
+
+    Open PR work is invisible to collect_github (it reads the default branch), so this
+    walks each open PR I authored and takes the commits I made inside the window.
+    'authors' filters the commits to my identities; empty means every commit on the PR.
+    """
+    login = github_login(token_env)
+    wanted = {str(a).lower() for a in ([authors] if isinstance(authors, str) else authors or [])}
+    sections = []
+    for slug in repos:
+        slug = str(slug).split("@", 1)[0].strip()
+        name = slug.split("/")[-1]
+        rows, seen = [], set()
+        try:
+            prs = github_get(f"/repos/{slug}/pulls",
+                             {"state": "open", "per_page": 100}, token_env=token_env).json()
+            for pr in prs:
+                if (pr.get("user") or {}).get("login") != login:
+                    continue
+                commits = github_get(f"/repos/{slug}/pulls/{pr['number']}/commits",
+                                     {"per_page": 100}, token_env=token_env).json()
+                for item in commits:
+                    sha = item.get("sha")
+                    commit = item.get("commit") or {}
+                    author = commit.get("author") or {}
+                    email = (author.get("email") or "").lower()
+                    if wanted and email not in wanted:
+                        continue
+                    when = parse_github_time(author["date"]) if author.get("date") else None
+                    if when is None or not (since <= when <= until) or sha in seen:
+                        continue
+                    seen.add(sha)
+                    subject, _, body = commit.get("message", "").partition("\n")
+                    rows.append({
+                        "sha": (sha or "")[:7],
+                        "date": author["date"][:16].replace("T", " "),
+                        "subject": f"[PR #{pr['number']}] {subject}",
+                        "body": " ".join(body.split()),
+                        "pushed": True,
+                        "tickets": sorted(set(TICKET_RE.findall(subject + " " + body))),
+                    })
+        except requests.RequestException as exc:
+            sections.append({"repo": f"github:{slug} (PRs)", "error": str(exc)})
+            continue
+        if rows:
+            rows.sort(key=lambda r: r["date"], reverse=True)
+            sections.append({"repo": f"github:{name} (PRs)", "commits": rows})
+    return sections
+
+
 def parse_github_time(text):
     """GitHub timestamps are ISO 8601 UTC; convert to naive local time like Jira."""
     return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
@@ -853,6 +904,8 @@ def main():
         git_sections = collect_git(team["repos"], author, since, now) if "git" in sources else []
         if "github" in sources:
             git_sections += collect_github(team["github_repos"], github_author, since, now, github_token_env)
+        if "github-prs" in sources:
+            git_sections += collect_github_prs(team["github_repos"], github_author, since, now, github_token_env)
         want_jira = "jira" in sources and not args.skip_jira
         want_gh_issues = "github-issues" in sources
         if want_jira:
