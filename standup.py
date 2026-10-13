@@ -26,6 +26,15 @@ from urllib3.util.retry import Retry
 
 HERE = Path(__file__).resolve().parent
 
+# Commits and comments contain non-ASCII characters (curly quotes, emoji). Windows consoles
+# default to a legacy codepage that cannot encode them, which would either crash print() or
+# show mojibake, so force UTF-8 on the standard streams.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # One session with retries: corporate networks occasionally drop a connection or fail an SSL handshake.
 HTTP = requests.Session()
 HTTP.mount("https://", HTTPAdapter(max_retries=Retry(
