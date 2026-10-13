@@ -17,7 +17,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -174,6 +174,75 @@ def collect_git(repos, author_override, since, until):
                 "tickets": sorted(set(TICKET_RE.findall(subject + " " + body + " " + refs))),
             })
         sections.append({"repo": name, "commits": rows})
+    return sections
+
+
+GITHUB_API = "https://api.github.com"
+
+
+def github_headers():
+    token = require_env("GITHUB_TOKEN")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def github_get(path, params=None):
+    resp = HTTP.get(GITHUB_API + path, params=params, headers=github_headers(), timeout=30)
+    if resp.status_code == 401:
+        sys.exit("GitHub rejected GITHUB_TOKEN (HTTP 401). Check the token has not expired.")
+    resp.raise_for_status()
+    return resp
+
+
+def github_login():
+    """The authenticated user's login, used to filter commits when no author is configured."""
+    return github_get("/user").json().get("login")
+
+
+def collect_github(repos, author_override, since, until):
+    """Commits straight from the GitHub API, so no local clone is needed.
+
+    Produces the same section/row shape as collect_git, so render_context is shared.
+    """
+    author = author_override or github_login()
+    since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    until_str = ceil_to_minute(until).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sections = []
+    for slug in repos:
+        slug = str(slug).strip()
+        ref = None
+        if "@" in slug:
+            slug, ref = slug.split("@", 1)  # owner/name@branch
+        name = slug.split("/")[-1]
+        rows = []
+        url = f"/repos/{slug}/commits"
+        params = {"since": since_str, "until": until_str, "author": author, "per_page": 100}
+        if ref:
+            params["sha"] = ref
+        try:
+            while url:
+                resp = github_get(url, params)
+                for item in resp.json():
+                    commit = item.get("commit") or {}
+                    message = commit.get("message", "")
+                    subject, _, body = message.partition("\n")
+                    rows.append({
+                        "sha": (item.get("sha") or "")[:7],
+                        "date": (commit.get("author") or {}).get("date", "")[:16].replace("T", " "),
+                        "subject": subject,
+                        "body": " ".join(body.split()),
+                        "pushed": True,
+                        "tickets": sorted(set(TICKET_RE.findall(subject + " " + body))),
+                    })
+                url = resp.links.get("next", {}).get("url")
+                params = None  # the next link already carries the query string
+        except requests.RequestException as exc:
+            sections.append({"repo": f"github:{slug}", "error": str(exc)})
+            continue
+        sections.append({"repo": f"github:{name}", "commits": rows})
     return sections
 
 
@@ -538,6 +607,7 @@ def resolve_teams(cfg, args):
         "board": t.get("board", cfg["jira"].get("board")),
         "webhook_env": t.get("webhook_env"),
         "slack_webhook_env": t.get("slack_webhook_env"),
+        "github_repos": t.get("github_repos", (cfg.get("github") or {}).get("repos", [])),
     } for t in raw]
     if args.team:
         wanted = args.team.strip().lower()
@@ -638,6 +708,8 @@ def main():
         if multi and team["name"]:
             print(f"===== {team['name']} =====")
         git_sections = collect_git(team["repos"], author, since, now) if "git" in sources else []
+        if "github" in sources:
+            git_sections += collect_github(team["github_repos"], author, since, now)
         want_jira = "jira" in sources and not args.skip_jira
         board_name, jira = collect_jira(cfg, since, now, team["board"]) if want_jira else (None, None)
         context = render_context(since, now, git_sections, jira, board_name, team["name"])
