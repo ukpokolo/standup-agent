@@ -477,6 +477,35 @@ def test_teams():
     send_to_teams("standup-agent test\n\nIf you can read this, the webhook works.")
 
 
+def test_slack():
+    """Post a fixed hello message to SLACK_WEBHOOK_URL to validate the webhook."""
+    if not os.environ.get("SLACK_WEBHOOK_URL"):
+        sys.exit("SLACK_WEBHOOK_URL is not set.")
+    send_to_slack("standup-agent test\n\nIf you can read this, the webhook works.")
+
+
+def send_to_slack(text, url=None):
+    """Post the standup to a Slack channel via an incoming webhook.
+
+    Enabled by setting SLACK_WEBHOOK_URL (or a per-team webhook env var). As with
+    Teams, failures are reported but never fatal, so a webhook problem cannot lose
+    the standup that was already printed.
+    """
+    if url is None:
+        url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not url:
+        return
+    try:
+        resp = HTTP.post(url, json={"text": text}, timeout=30)
+    except requests.RequestException as exc:
+        print(f"\n(could not post to Slack: {exc})")
+        return
+    if resp.status_code >= 400:
+        print(f"\n(could not post to Slack: HTTP {resp.status_code}: {resp.text[:300]})")
+        return
+    print("\n(posted to Slack)")
+
+
 def post_standup(cfg, team, text):
     """Send the finished standup to every enabled sink.
 
@@ -486,6 +515,8 @@ def post_standup(cfg, team, text):
     for name in enabled_outputs(cfg):
         if name == "teams":
             send_to_teams(text, team_webhook_url(team))
+        elif name == "slack":
+            send_to_slack(text, team_slack_url(team))
         else:
             print(f"\n(unknown output '{name}' skipped)")
 
@@ -506,6 +537,7 @@ def resolve_teams(cfg, args):
         "repos": t.get("repos", cfg.get("repos", [])),
         "board": t.get("board", cfg["jira"].get("board")),
         "webhook_env": t.get("webhook_env"),
+        "slack_webhook_env": t.get("slack_webhook_env"),
     } for t in raw]
     if args.team:
         wanted = args.team.strip().lower()
@@ -519,6 +551,10 @@ def resolve_teams(cfg, args):
 
 def team_webhook_url(team):
     return os.environ.get(team.get("webhook_env") or "TEAMS_WEBHOOK_URL")
+
+
+def team_slack_url(team):
+    return os.environ.get(team.get("slack_webhook_env") or "SLACK_WEBHOOK_URL")
 
 
 def splits(text, default):
@@ -558,10 +594,15 @@ def main():
     ap.add_argument("--list-models", action="store_true", help="list models on the gateway and exit")
     ap.add_argument("--copy", action="store_true", help="copy the result to the clipboard")
     ap.add_argument("--test-teams", action="store_true", help="post a test card to TEAMS_WEBHOOK_URL and exit")
+    ap.add_argument("--test-slack", action="store_true", help="post a test message to SLACK_WEBHOOK_URL and exit")
     args = ap.parse_args()
 
     if args.test_teams:
         test_teams()
+        return
+
+    if args.test_slack:
+        test_slack()
         return
 
     cfg = load_config(args.config)
