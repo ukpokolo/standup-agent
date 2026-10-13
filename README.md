@@ -1,7 +1,7 @@
 # standup-agent
 
 Generates a standup message (Yesterday / Today / Blockers) from your recent git commits and your
-Jira Cloud tickets, using a model on the company AI gateway.
+Jira Cloud tickets, using an OpenAI-compatible chat model.
 
 A small script collects the data and passes it to the model as text, so it works with any
 gateway model, with or without tool calling.
@@ -19,7 +19,7 @@ gateway model, with or without tool calling.
      and an optional `webhook_env` (the env var holding that team's Teams webhook).
    - `standup_time`: your standup time, 24h `HH:MM`. The report covers everything since the previous
      working day's standup time (Monday rolls back to Friday).
-   - `gateway.model`: run `python standup.py --list-models` and copy the exact the model id
+   - `gateway.model`: run `python standup.py --list-models` and copy the exact model id to use
 
    A single-team config can skip `teams` and use top-level `repos` + `jira.board` instead; that still works.
 4. Set secrets as environment variables (never put them in `config.json` or commit them).
@@ -52,9 +52,9 @@ python standup.py --standup-time 10:00   # override the standup time
 python standup.py --since "2026-09-22 09:30"   # explicit window start
 python standup.py --skip-jira            # git only
 python standup.py --list-boards          # boards you can see: id, type, name, project
-python standup.py --board "Smart Trade Scrum Board"   # read tickets from one board (id or name)
+python standup.py --board "My Scrum Board"    # read tickets from one board (id or name)
 python standup.py --board all            # tickets from every board
-python standup.py --team "Payments"      # run only one configured team
+python standup.py --team "Alpha"         # run only one configured team
 python standup.py --all-teams            # run every configured team (the default)
 ```
 
@@ -65,15 +65,15 @@ repos, its own Jira board and (optionally) its own Teams webhook, and gets its o
 
 ```json
 "teams": [
-  { "name": "Smart Trade", "board": "Smart Trade Scrum Board",
-    "repos": ["C:/work/example-ui"], "webhook_env": "TEAMS_WEBHOOK_URL_EXAMPLE_TEAM" },
-  { "name": "Payments", "board": "Payments Scrum Board",
-    "repos": ["C:/work/payments-api"], "webhook_env": "TEAMS_WEBHOOK_URL_PAYMENTS" }
+  { "name": "Alpha", "board": "Alpha Scrum Board",
+    "repos": ["C:/work/alpha-ui"], "webhook_env": "TEAMS_WEBHOOK_URL_ALPHA" },
+  { "name": "Beta", "board": "Beta Scrum Board",
+    "repos": ["C:/work/beta-api"], "webhook_env": "TEAMS_WEBHOOK_URL_BETA" }
 ]
 ```
 
 - `python standup.py` runs **every** team and prints one standup per team.
-- `python standup.py --team "Payments"` runs just that team.
+- `python standup.py --team "Beta"` runs just that team.
 - Each team posts to the webhook named by its `webhook_env` (falling back to `TEAMS_WEBHOOK_URL` if unset),
   so different teams can deliver to different chats/channels.
 - `--board` overrides the board for every team in that run.
@@ -91,7 +91,7 @@ else (for example QA sending a ticket back with a comment late in the day). Tick
 by title, never by ID. Use `--until "YYYY-MM-DD HH:MM"` to replay a past standup.
 
 Commits not yet pushed are marked `[NOT PUSHED]` in the data given to the model.
-Ticket keys such as `CR-123` in commit messages or branch names are linked to Jira tickets.
+Ticket keys such as `ABC-123` in commit messages or branch names are linked to Jira tickets.
 Both the commit subject and its body are read, so detail written in the body is used too.
 
 ## Posting to Teams
