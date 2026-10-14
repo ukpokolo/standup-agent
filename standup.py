@@ -947,20 +947,29 @@ def main():
             git_sections += collect_github(team["github_repos"], github_author, since, now, github_token_env)
         if "github-prs" in sources:
             git_sections += collect_github_prs(team["github_repos"], github_author, since, now, github_token_env)
-        want_jira = "jira" in sources and not args.skip_jira
-        want_gh_issues = "github-issues" in sources
-        if want_jira:
+        # Ticket sources merge: any combination of Jira, GitHub issues and ClickUp can run
+        # together. A single Jira source keeps the original heading for back-compatibility.
+        tickets, board_name, labels = [], None, []
+        if "jira" in sources and not args.skip_jira:
             board_name, tickets = collect_jira(cfg, since, now, team["board"])
+            labels.append("Jira")
+        if "github-issues" in sources:
+            _, gh_issues = collect_github_issues(cfg, team["github_repos"], since, now, github_token_env)
+            tickets += gh_issues
+            labels.append("GitHub issues")
+        if "clickup" in sources:
+            _, clickup = collect_clickup(cfg, since, now)
+            tickets += clickup
+            labels.append("ClickUp")
+        if labels == ["Jira"]:
             tickets_label, board_label, tickets_heading = "Jira", "Jira", "JIRA TICKETS ASSIGNED TO ME"
-        elif want_gh_issues:
-            board_name, tickets = collect_github_issues(cfg, team["github_repos"], since, now, github_token_env)
-            tickets_label, board_label, tickets_heading = "GitHub issues", None, "GITHUB ISSUES ASSIGNED TO ME"
-        elif "clickup" in sources:
-            board_name, tickets = collect_clickup(cfg, since, now)
-            tickets_label, board_label, tickets_heading = "ClickUp tasks", None, "CLICKUP TASKS ASSIGNED TO ME"
+        elif labels:
+            tickets_label = " + ".join(labels)
+            board_label = "Jira" if board_name else None
+            tickets_heading = f"{tickets_label.upper()} ASSIGNED TO ME"
         else:
-            board_name, tickets = None, None
-            tickets_label, board_label, tickets_heading = "Jira", "Jira", "JIRA TICKETS ASSIGNED TO ME"
+            tickets, tickets_label = None, "Jira"
+            board_label, tickets_heading = "Jira", "JIRA TICKETS ASSIGNED TO ME"
         context = render_context(
             since, now, git_sections, tickets, board_name, team["name"],
             board_label=board_label, tickets_name=tickets_label, tickets_heading=tickets_heading,
