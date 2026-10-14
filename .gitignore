@@ -1,5 +1,6 @@
 config.json
 config.pipeline.json
+ci-config.json
 .env
 __pycache__/
 .venv/

@@ -1,0 +1,49 @@
+name: Daily standup
+
+on:
+  schedule:
+    # 08:20 UTC = 09:20 in UTC+1 (WAT), Monday to Friday.
+    - cron: "20 8 * * 1-5"
+  workflow_dispatch: {} # allow a manual run from the Actions tab
+
+permissions:
+  contents: read
+
+# Never let a slow run overlap the next scheduled one.
+concurrency:
+  group: standup
+  cancel-in-progress: false
+
+jobs:
+  standup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write config from secret
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+        run: |
+          if [ -z "$CONFIG_JSON" ]; then
+            echo "Secret CONFIG_JSON is not set." >&2
+            exit 1
+          fi
+          printf '%s' "$CONFIG_JSON" > config.json
+
+      - name: Generate and post the standup
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          AI_GATEWAY_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+        run: python standup.py --config config.json

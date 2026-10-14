@@ -1,0 +1,28 @@
+{
+  "standup_time": "09:20",
+  "jira": {
+    "base_url": "https://your-company.atlassian.net",
+    "board": null
+  },
+  "gateway": {
+    "base_url": "https://api.groq.com/openai/v1",
+    "model": "llama-3.3-70b-versatile",
+    "ca_bundle": null
+  },
+  "git": {
+    "author": null
+  },
+  "github": {
+    "token_env": "GITHUB_TOKEN",
+    "author": [],
+    "repos": []
+  },
+  "clickup": {
+    "team": null,
+    "list": null
+  },
+  "sources": ["jira", "github", "github-prs", "clickup"],
+  "outputs": ["teams", "slack"],
+  "exclude_statuses": ["backlog"],
+  "stale_after_days": 21
+}

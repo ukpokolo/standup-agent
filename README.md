@@ -212,6 +212,32 @@ Notes:
 
 ## Running it automatically before standup
 
+### In the cloud (GitHub Actions, no server)
+
+`.github/workflows/standup.yml` runs the standup on a schedule (08:20 UTC, Mon-Fri) and posts to
+Teams/Slack. It needs no local machine. Set these **repository secrets** (Settings > Secrets and
+variables > Actions):
+
+| Secret | Purpose |
+| --- | --- |
+| `CONFIG_JSON` | The full `config.json` contents, as one JSON string (keeps repo names out of the public repo). |
+| `MODEL_API_KEY` | The model gateway key (e.g. a Groq API key). |
+| `JIRA_EMAIL`, `JIRA_API_TOKEN` | Jira Cloud credentials. |
+| `TEAMS_WEBHOOK_URL` | Teams webhook, if posting to Teams. |
+| `SLACK_WEBHOOK_URL` | Slack webhook, if posting to Slack. |
+| `GITHUB_TOKEN` (as `GH_PAT`) | Token to read the GitHub repos/issues/PRs named in the config. |
+| `CLICKUP_API_TOKEN` | ClickUp token, if using that source. |
+
+Any hosted model works if it speaks the OpenAI chat API; set `gateway.base_url` and `gateway.model`
+in `CONFIG_JSON`. Public examples: Groq (`https://api.groq.com/openai/v1`), Gemini
+(`https://generativelanguage.googleapis.com/v1beta/openai/`), GitHub Models
+(`https://models.inference.ai.azure.com`). A company gateway that is only reachable inside a private
+network cannot be used from GitHub-hosted runners. `config.ci.example.json` shows the shape.
+
+You can also trigger a run manually from the Actions tab (**workflow_dispatch**).
+
+### Locally
+
 Windows (Task Scheduler), 10 minutes before a 09:30 standup:
 ```powershell
 schtasks /Create /SC WEEKLY /D MON,TUE,WED,THU,FRI /TN "standup-agent" /ST 09:20 `
